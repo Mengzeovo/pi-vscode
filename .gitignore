@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.vscode-test/
+.test-work/
+.review-tmp/
+*.vsix

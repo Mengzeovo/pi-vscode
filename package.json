@@ -1,0 +1,220 @@
+{
+	"name": "pi-harness",
+	"publisher": "local",
+	"displayName": "Pi Harness",
+	"description": "在 VS Code Chat 中使用 Pi 编码代理",
+	"version": "0.1.0",
+	"license": "UNLICENSED",
+	"private": true,
+	"engines": {
+		"vscode": "^1.144.0"
+	},
+	"categories": [
+		"AI",
+		"Chat"
+	],
+	"main": "./dist/extension.js",
+	"enabledApiProposals": [
+		"chatSessionsProvider",
+		"chatParticipantPrivate",
+		"chatParticipantAdditions",
+		"chatReferenceDiagnostic",
+		"chatReferenceBinaryData",
+		"chatProvider"
+	],
+	"capabilities": {
+		"untrustedWorkspaces": {
+			"supported": "limited",
+			"description": "工作区未受信任时只能浏览 Pi 会话历史，不会启动 Pi 进程。"
+		},
+		"virtualWorkspaces": false
+	},
+	"contributes": {
+		"chatSessions": [
+			{
+				"type": "pi-harness",
+				"name": "pi",
+				"displayName": "Pi",
+				"description": "Pi 编码代理",
+				"when": "!remoteName",
+				"icon": "$(hubot)",
+				"welcomeTitle": "Pi",
+				"welcomeMessage": "在当前工作区中运行 Pi 编码代理",
+				"inputPlaceholder": "向 Pi 提问，输入 # 添加上下文",
+				"canDelegate": true,
+				"requiresCustomModels": true,
+				"capabilities": {
+					"supportsFileAttachments": true,
+					"supportsImageAttachments": true,
+					"supportsSymbolAttachments": true,
+					"supportsProblemAttachments": true,
+					"supportsToolAttachments": true
+				},
+				"commands": [
+					{
+						"name": "compact",
+						"description": "压缩 Pi 会话的上下文"
+					}
+				]
+			}
+		],
+		"languageModelChatProviders": [
+			{
+				"vendor": "pi-harness",
+				"displayName": "Pi"
+			}
+		],
+		"commands": [
+			{
+				"command": "piHarness.quoteSelection",
+				"title": "引用选中的回复内容",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.continueInTerminal",
+				"title": "在终端中继续此会话",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.renameSession",
+				"title": "重命名",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.deleteSession",
+				"title": "删除",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.cleanSnapshots",
+				"title": "清理 Pi 快照",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.refreshModels",
+				"title": "刷新 Pi 模型列表",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.refreshSessions",
+				"title": "刷新 Pi 会话列表",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.restoreHint",
+				"title": "使用 Fork Conversation 还原",
+				"category": "Pi"
+			},
+			{
+				"command": "piHarness.openDiff",
+				"title": "打开 Pi 修改的差异",
+				"category": "Pi"
+			}
+		],
+		"keybindings": [
+			{
+				"command": "piHarness.quoteSelection",
+				"key": "ctrl+alt+q",
+				"mac": "cmd+alt+q",
+				"when": "inChat && !inChatInput && lockedCodingAgentId == 'pi-harness'"
+			},
+			{
+				"command": "piHarness.restoreHint",
+				"key": "delete",
+				"mac": "cmd+backspace",
+				"when": "inChat && lockedCodingAgentId == 'pi-harness' && !inChatInput && !textInputFocus && !inputFocus && !inChatQuestionCarousel"
+			}
+		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "piHarness.restoreHint",
+					"when": "false"
+				},
+				{
+					"command": "piHarness.openDiff",
+					"when": "false"
+				},
+				{
+					"command": "piHarness.quoteSelection",
+					"when": "false"
+				},
+				{
+					"command": "piHarness.continueInTerminal",
+					"when": "false"
+				},
+				{
+					"command": "piHarness.renameSession",
+					"when": "false"
+				},
+				{
+					"command": "piHarness.deleteSession",
+					"when": "false"
+				}
+			],
+			"chat/chatSessions": [
+				{
+					"command": "piHarness.renameSession",
+					"when": "chatSessionType == pi-harness",
+					"group": "1_edit@1"
+				},
+				{
+					"command": "piHarness.deleteSession",
+					"when": "chatSessionType == pi-harness",
+					"group": "1_edit@2"
+				},
+				{
+					"command": "piHarness.continueInTerminal",
+					"when": "chatSessionType == pi-harness",
+					"group": "2_open@1"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Pi Harness",
+			"properties": {
+				"piHarness.piPackagePath": {
+					"type": "string",
+					"default": "",
+					"scope": "machine",
+					"markdownDescription": "Pi 包 `@earendil-works/pi-coding-agent` 的安装目录。留空时通过 `npm root -g` 定位全局安装。"
+				},
+				"piHarness.idleShutdownMinutes": {
+					"type": "number",
+					"default": 10,
+					"minimum": 1,
+					"markdownDescription": "Pi 会话空闲多少分钟后结束其 Pi 进程并释放写入权限。下一次发送消息时自动重新启动。"
+				}
+			}
+		}
+	},
+	"scripts": {
+		"build": "node scripts/build.mjs",
+		"typecheck": "tsc -p tsconfig.json --noEmit && tsc -p pi-extension/tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+		"test": "npm run build && node dist/test/runTests.js",
+		"test:ui": "npm run build && node dist/test/ui/runUiTests.js",
+		"test:reopen": "npm run build && node dist/test/ui/runReopenTest.js",
+		"test:no-proposed": "npm run build && node dist/test/runTests.js --no-proposed",
+		"test:acceptance": "npm run package && node dist/test/acceptance/runAcceptance.js",
+		"package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license"
+	},
+	"dependencies": {
+		"@vscode/prompt-tsx": "0.4.0-alpha.9",
+		"gpt-tokenizer": "4.1.0",
+		"semver": "7.8.6",
+		"vscode-jsonrpc": "10.0.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "1.5.0",
+		"@types/mocha": "10.0.10",
+		"@types/node": "24.19.2",
+		"@types/semver": "7.8.0",
+		"@types/vscode": "1.144.0",
+		"@vscode/test-electron": "3.1.0",
+		"@vscode/vsce": "4.1.0",
+		"esbuild": "0.28.2",
+		"mocha": "12.0.3",
+		"playwright-core": "1.64.1",
+		"typescript": "7.0.2"
+	}
+}

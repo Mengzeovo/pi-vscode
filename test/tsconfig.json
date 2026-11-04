@@ -1,0 +1,17 @@
+{
+	"compilerOptions": {
+		"target": "ES2023",
+		"lib": ["ES2023", "DOM"],
+		"module": "preserve",
+		"moduleResolution": "bundler",
+		"strict": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"noImplicitOverride": true,
+		"types": ["node", "mocha"],
+		"jsx": "react",
+		"jsxFactory": "vscpp",
+		"jsxFragmentFactory": "vscppf"
+	},
+	"include": ["./**/*.ts", "../src/**/*.ts", "../src/**/*.tsx", "../src/vscode-dts/*.d.ts", "../shared/**/*.ts"]
+}

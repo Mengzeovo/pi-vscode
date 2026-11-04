@@ -1,0 +1,19 @@
+{
+	"name": "pi-harness-ui-driver",
+	"publisher": "local",
+	"displayName": "Pi Harness UI Test Driver",
+	"description": "在正常启动的 VS Code 中运行 Pi Harness 的界面测试",
+	"version": "0.0.1",
+	"license": "UNLICENSED",
+	"private": true,
+	"engines": {
+		"vscode": "^1.144.0"
+	},
+	"main": "./extension.js",
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"extensionDependencies": [
+		"local.pi-harness"
+	]
+}
