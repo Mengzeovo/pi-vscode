@@ -2,7 +2,7 @@
 
 运行环境为 Pi 1.5.0、Node.js 24.15.0 或更高版本。全部包保留上游许可证；兼容修改位于本目录。用户原有安装目录保持原内容。
 
-| 目录 | 来源版本 | 本机来源 | 许可证 |
+| 目录 | 来源版本 | 项目内来源 | 许可证 |
 |---|---|---|---|
 | `pi-subagents` | 0.84.0 | `compat/pi-subagents` | MIT，见 `pi-subagents/LICENSE` |
 | `pi-cliproxyapi-provider` | 1.4.24 | `compat/pi-cliproxyapi-provider` | MIT，见 `pi-cliproxyapi-provider/LICENSE` |

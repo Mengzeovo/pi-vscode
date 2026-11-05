@@ -2,7 +2,7 @@
 
 日期：2026-11-04。
 
-审查对象：[HARNESS_IMPLEMENTATION_PLAN.md](./HARNESS_IMPLEMENTATION_PLAN.md)。方案 SHA-256：`5060BB1595CCE5E8624A019C89198BB98B7A1678B95AE22BCE4E537F4B8BBFF1`。项目分支为 `main`，提交为 `21919c0796020abc1dceabaf55341e6371fdd365`。
+审查对象：[HARNESS_IMPLEMENTATION_PLAN.md](./HARNESS_IMPLEMENTATION_PLAN.md)。项目分支为 `main`。
 
 三个独立子代理均配置 `reasoning_effort: ultra`，分别复核历史回退与持久恢复、运行时与 reload、Windows 进程管理与 Chat 接口。各自完整读取修订方案，依据项目代码、实际安装的 Pi 1.5.0 SDK、VS Code 源码及官方文档检查接口和时序；新增内容由相应子代理再次复核。主代理负责方案编辑、证据检查及文档验证。当前审查范围内没有尚待修订的确认问题。
 
