@@ -1,30 +1,35 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants } from "node:fs";
-import { access, mkdir } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
-import type { AgentToolResult, CustomEntryDraft, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, CustomEntryDraft, ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createEditToolDefinition, createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { CancellationTokenSource, createMessageConnection, type MessageConnection, SocketMessageReader, SocketMessageWriter } from "vscode-jsonrpc/node";
 import {
 	CopilotInvoke,
 	type CopilotToolDeclaration,
+	type CommitIdentity,
+	type CommitResult,
+	type DiagnosticResult,
 	EDIT_ENTRY_TYPE,
 	type EditEntryData,
 	EditorDefinition,
 	EditorDiagnostics,
 	EditorReferences,
-	ENV_IPC_PATH,
-	ENV_IPC_TOKEN,
 	FileCommit,
 	FileReadBase,
 	Hello,
+	type HelloResult,
 	type LocationResult,
+	type ReadBaseResult,
 	RecordRequest,
+	type RecordRequestParams,
 	REQUEST_ENTRY_TYPE,
-	REWIND_COMMAND,
 	type RequestEntryData,
 	SetTurnTools,
+	type SetTurnToolsParams,
+	type ToolTextResult,
 } from "../shared/protocol";
 
 function textResult(text: string, isError = false): AgentToolResult<undefined> {
@@ -61,23 +66,37 @@ function tokenFor(signal: AbortSignal | undefined): CancellationTokenSource {
 	return source;
 }
 
-export default function piHarness(pi: ExtensionAPI): void {
-	const ipcPath = process.env[ENV_IPC_PATH];
-	const ipcToken = process.env[ENV_IPC_TOKEN];
-	// bash 启动的命令继承环境变量，读取后立即删除，避免命令连接到编辑器通道
-	delete process.env[ENV_IPC_PATH];
-	delete process.env[ENV_IPC_TOKEN];
-	if (ipcPath === undefined || ipcToken === undefined) {
-		throw new Error("pi-harness 扩展只能由 VS Code 的 Pi Harness 扩展启动");
-	}
+export interface HarnessExtensionConfig {
+	readonly cwd: string;
+	readonly role?: "root" | "child";
+	readonly identity: () => CommitIdentity;
+	readonly connection?: MessageConnection;
+	readonly copilotTools?: readonly CopilotToolDeclaration[];
+	readonly ipcPath?: string;
+	readonly ipcToken?: string;
+	readonly onEdit?: (data: EditEntryData, identity: CommitIdentity) => void | Promise<void>;
+	readonly onDisconnect?: () => void | Promise<void>;
+}
+
+export function createHarnessExtension(config: HarnessExtensionConfig): ExtensionFactory {
+	if (!config.cwd || !config.connection && (!config.ipcPath || !config.ipcToken)) throw new Error("Harness 扩展缺少工作目录或编辑器连接");
+	return (pi) => bindHarnessExtension(pi, config);
+}
+
+export default createHarnessExtension;
+
+function bindHarnessExtension(pi: ExtensionAPI, config: HarnessExtensionConfig): void {
 
 	let connection: MessageConnection | undefined;
 	let socket: Socket | undefined;
 	let sessionManager: ExtensionContext["sessionManager"] | undefined;
-	const toolCallIds = new AsyncLocalStorage<string>();
+	const toolCalls = new AsyncLocalStorage<{ toolCallId: string; identity: CommitIdentity }>();
 	const copilotTools = new Set<string>();
 	let stagedCopilotTools: readonly string[] | undefined;
 	const pendingDrafts: CustomEntryDraft[] = [];
+	const connectionBindings: Array<{ dispose(): void }> = [];
+	const assignedUsers = new Set<string>();
+	const recordedRequests = new Map<string, string>();
 
 	const requireConnection = (): MessageConnection => {
 		if (!connection) {
@@ -86,12 +105,12 @@ export default function piHarness(pi: ExtensionAPI): void {
 		return connection;
 	};
 
-	const currentToolCallId = (): string => {
-		const id = toolCallIds.getStore();
-		if (id === undefined) {
+	const currentToolCall = (): { toolCallId: string; identity: CommitIdentity } => {
+		const call = toolCalls.getStore();
+		if (call === undefined) {
 			throw new Error("文件操作不在工具调用中执行");
 		}
-		return id;
+		return call;
 	};
 
 	const registerCopilotTool = (declaration: CopilotToolDeclaration): void => {
@@ -104,33 +123,36 @@ export default function piHarness(pi: ExtensionAPI): void {
 			defaultActive: false,
 			async execute(toolCallId, params, signal) {
 				const cancellation = tokenFor(signal);
-				const result = await requireConnection().sendRequest(CopilotInvoke, { name: declaration.name, input: params, toolCallId }, cancellation.token);
+				const result = await requireConnection().sendRequest<ToolTextResult>(CopilotInvoke.method, { name: declaration.name, input: params, toolCallId }, cancellation.token);
 				return textResult(result.text, result.isError);
 			},
 		});
 	};
 
 	const connectToVsCode = async (ctx: ExtensionContext): Promise<void> => {
-		const pipe = connect(ipcPath);
-		await new Promise<void>((resolve, reject) => {
-			pipe.once("connect", resolve);
-			pipe.once("error", reject);
-		});
-		socket = pipe;
-		const conn = createMessageConnection(new SocketMessageReader(pipe), new SocketMessageWriter(pipe));
-		conn.onRequest(SetTurnTools, (params) => {
+		let conn = config.connection;
+		if (!conn) {
+			const pipe = connect(config.ipcPath!);
+			await new Promise<void>((resolve, reject) => { pipe.once("connect", resolve); pipe.once("error", reject); });
+			socket = pipe;
+			conn = createMessageConnection(new SocketMessageReader(pipe), new SocketMessageWriter(pipe));
+		}
+		if (config.role !== "child") {
+		connectionBindings.push(conn.onRequest(SetTurnTools.method, (params: SetTurnToolsParams) => {
 			stagedCopilotTools = params.enabledCopilotTools;
-		});
-		conn.onRequest(RecordRequest, (params) => {
+		}));
+		connectionBindings.push(conn.onRequest(RecordRequest.method, (params: RecordRequestParams) => {
 			const manager = sessionManager;
 			if (!manager) {
 				throw new Error("会话尚未启动");
 			}
 			const branch = manager.getBranch();
+			const recorded = recordedRequests.get(params.requestId);
+			if (recorded !== undefined) return { userEntryId: recorded };
 			let userEntryId: string | undefined;
-			for (let index = branch.length - 1; index >= 0; index--) {
+			for (let index = 0; index < branch.length; index++) {
 				const entry = branch[index];
-				if (entry.type === "message" && entry.message.role === "user" && messageText(entry.message.content) === params.messageText) {
+				if (entry.type === "message" && entry.message.role === "user" && !assignedUsers.has(entry.id) && messageText(entry.message.content) === params.messageText) {
 					userEntryId = entry.id;
 					break;
 				}
@@ -139,55 +161,48 @@ export default function piHarness(pi: ExtensionAPI): void {
 				throw new Error(`当前分支中没有找到请求 ${params.requestId} 对应的用户消息`);
 			}
 			const data: RequestEntryData = { requestId: params.requestId, userEntryId, userText: params.userText, references: params.references };
+			assignedUsers.add(userEntryId);
+			recordedRequests.set(params.requestId, userEntryId);
 			pendingDrafts.push({ type: "custom", customType: REQUEST_ENTRY_TYPE, data });
 			return { userEntryId };
-		});
-		conn.listen();
+		}));
+		}
+		if (!config.connection) conn.listen();
 		connection = conn;
-		pipe.on("close", () => {
+		connectionBindings.push(conn.onClose(() => {
 			connection = undefined;
-			// VS Code 一侧已经断开：中止当前运行并退出，避免在没有编辑器的情况下继续修改文件
 			ctx.abort();
-			ctx.shutdown();
-		});
-		const hello = await conn.sendRequest(Hello, {
-			token: ipcToken,
-			sessionId: ctx.sessionManager.getSessionId(),
-			sessionFile: ctx.sessionManager.getSessionFile(),
-		});
-		for (const declaration of hello.copilotTools) {
+			if (config.onDisconnect) void config.onDisconnect(); else ctx.shutdown();
+		}));
+		const declarations = config.connection ? config.copilotTools ?? [] : (await conn.sendRequest<HelloResult>(Hello.method, {
+			token: config.ipcToken!, sessionId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile(),
+			parentSessionId: config.identity().sessionId, identity: config.identity(), role: "child",
+		})).copilotTools;
+		for (const declaration of declarations) {
 			registerCopilotTool(declaration);
 		}
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		sessionManager = ctx.sessionManager;
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type === "message" && entry.message.role === "user") assignedUsers.add(entry.id);
+			if (entry.type === "custom" && entry.customType === REQUEST_ENTRY_TYPE) {
+				const data = entry.data as RequestEntryData;
+				recordedRequests.set(data.requestId, data.userEntryId);
+			}
+		}
 		if (!connection) {
 			await connectToVsCode(ctx);
 		}
 	});
 
 	pi.on("session_shutdown", () => {
-		connection?.dispose();
+		for (const binding of connectionBindings.splice(0)) binding.dispose();
+		if (!config.connection) connection?.dispose();
 		connection = undefined;
 		socket?.destroy();
 		socket = undefined;
-	});
-
-	// VS Code 中编辑请求时移除了之后的请求：把当前分支退回到第一条被移除的用户消息之前，原分支保留在会话文件中
-	pi.registerCommand(REWIND_COMMAND, {
-		description: "VS Code 内部使用：把当前分支退回到指定用户消息之前",
-		handler: async (args, ctx) => {
-			const entryId = args.trim();
-			const entry = ctx.sessionManager.getEntry(entryId);
-			if (entry?.type !== "message" || entry.message.role !== "user") {
-				throw new Error(`${entryId} 不是用户消息条目`);
-			}
-			const result = await ctx.navigateTree(entryId, { summarize: false });
-			if (result.cancelled) {
-				throw new Error(`退回到 ${entryId} 之前被取消`);
-			}
-		},
 	});
 
 	pi.on("before_agent_start", (event) => {
@@ -209,61 +224,64 @@ export default function piHarness(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", () => {
-		// 运行结束后才到达的记录直接追加，运行之外追加条目不会落在工具调用和结果之间
+		// 运行结束后到达的记录直接追加，保持工具调用与结果的顺序。
 		for (const draft of pendingDrafts.splice(0)) {
 			pi.appendEntry(draft.customType, draft.data);
 		}
 	});
 
-	const recordEdit = (data: EditEntryData): void => {
+	const recordEdit = async (data: EditEntryData): Promise<void> => {
+		await config.onEdit?.(data, currentToolCall().identity);
 		pendingDrafts.push({ type: "custom", customType: EDIT_ENTRY_TYPE, data });
 	};
 
-	const cwd = process.cwd();
+	const cwd = config.cwd;
 	const editDefinition = createEditToolDefinition(cwd, {
 		operations: {
 			access: (path) => access(path, constants.R_OK | constants.W_OK),
 			readFile: async (path) => {
-				const result = await requireConnection().sendRequest(FileReadBase, { path, toolCallId: currentToolCallId() });
+				const result = await requireConnection().sendRequest<ReadBaseResult>(FileReadBase.method, { path, ...currentToolCall() });
+				if (!result.exists) throw new Error(`文件不存在：${path}`);
 				return Buffer.from(result.contentBase64, "base64");
 			},
 			writeFile: async (path, content) => {
-				const toolCallId = currentToolCallId();
-				const result = await requireConnection().sendRequest(FileCommit, {
+				const { toolCallId, identity } = currentToolCall();
+				const result = await requireConnection().sendRequest<CommitResult>(FileCommit.method, {
 					path,
 					contentBase64: Buffer.from(content, "utf8").toString("base64"),
 					toolCallId,
 					tool: "edit",
+					identity,
 				});
-				recordEdit({ toolCallId, tool: "edit", path, beforeHash: result.beforeHash, afterHash: result.afterHash });
+				await recordEdit({ toolCallId, tool: "edit", path, beforeHash: result.beforeHash, afterHash: result.afterHash });
 			},
 		},
 	});
 	pi.registerTool({
 		...editDefinition,
-		execute: (toolCallId, params, signal, onUpdate, ctx) => toolCallIds.run(toolCallId, () => editDefinition.execute(toolCallId, params, signal, onUpdate, ctx)),
+		execute: (toolCallId, params, signal, onUpdate, ctx) => toolCalls.run({ toolCallId, identity: { ...config.identity() } }, () => editDefinition.execute(toolCallId, params, signal, onUpdate, ctx)),
 	});
 
 	const writeDefinition = createWriteToolDefinition(cwd, {
 		operations: {
-			mkdir: async (dir) => {
-				await mkdir(dir, { recursive: true });
-			},
+			mkdir: async () => {},
 			writeFile: async (path, content) => {
-				const toolCallId = currentToolCallId();
-				const result = await requireConnection().sendRequest(FileCommit, {
+				const { toolCallId, identity } = currentToolCall();
+				await requireConnection().sendRequest<ReadBaseResult>(FileReadBase.method, { path, toolCallId, identity });
+				const result = await requireConnection().sendRequest<CommitResult>(FileCommit.method, {
 					path,
 					contentBase64: Buffer.from(content, "utf8").toString("base64"),
 					toolCallId,
 					tool: "write",
+					identity,
 				});
-				recordEdit({ toolCallId, tool: "write", path, beforeHash: result.beforeHash, afterHash: result.afterHash });
+				await recordEdit({ toolCallId, tool: "write", path, beforeHash: result.beforeHash, afterHash: result.afterHash });
 			},
 		},
 	});
 	pi.registerTool({
 		...writeDefinition,
-		execute: (toolCallId, params, signal, onUpdate, ctx) => toolCallIds.run(toolCallId, () => writeDefinition.execute(toolCallId, params, signal, onUpdate, ctx)),
+		execute: (toolCallId, params, signal, onUpdate, ctx) => toolCalls.run({ toolCallId, identity: { ...config.identity() } }, () => writeDefinition.execute(toolCallId, params, signal, onUpdate, ctx)),
 	});
 
 	const positionSchema = Type.Object({
@@ -280,7 +298,7 @@ export default function piHarness(pi: ExtensionAPI): void {
 		parameters: positionSchema,
 		async execute(_toolCallId, params, signal) {
 			const cancellation = tokenFor(signal);
-			const locations = await requireConnection().sendRequest(EditorDefinition, { path: params.path, line: params.line - 1, character: params.character - 1 }, cancellation.token);
+			const locations = await requireConnection().sendRequest<readonly LocationResult[]>(EditorDefinition.method, { path: params.path, line: params.line - 1, character: params.character - 1 }, cancellation.token);
 			return textResult(formatLocations(locations));
 		},
 	});
@@ -293,7 +311,7 @@ export default function piHarness(pi: ExtensionAPI): void {
 		parameters: positionSchema,
 		async execute(_toolCallId, params, signal) {
 			const cancellation = tokenFor(signal);
-			const locations = await requireConnection().sendRequest(EditorReferences, { path: params.path, line: params.line - 1, character: params.character - 1 }, cancellation.token);
+			const locations = await requireConnection().sendRequest<readonly LocationResult[]>(EditorReferences.method, { path: params.path, line: params.line - 1, character: params.character - 1 }, cancellation.token);
 			return textResult(formatLocations(locations));
 		},
 	});
@@ -306,7 +324,7 @@ export default function piHarness(pi: ExtensionAPI): void {
 		parameters: Type.Object({ path: Type.Optional(Type.String({ description: "文件路径；省略时返回全部诊断" })) }),
 		async execute(_toolCallId, params, signal) {
 			const cancellation = tokenFor(signal);
-			const diagnostics = await requireConnection().sendRequest(EditorDiagnostics, { path: params.path }, cancellation.token);
+			const diagnostics = await requireConnection().sendRequest<readonly DiagnosticResult[]>(EditorDiagnostics.method, { path: params.path }, cancellation.token);
 			if (diagnostics.length === 0) {
 				return textResult("没有诊断");
 			}

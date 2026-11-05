@@ -24,19 +24,25 @@ export function runDirectory(dir: string): Promise<void> {
 	}
 	const outcomes: TestOutcome[] = [];
 	const resultsFile = process.env.PI_HARNESS_TEST_RESULTS;
+	const record = (outcome: TestOutcome): void => {
+		outcomes.push(outcome);
+		if (resultsFile !== undefined) writeFileSync(resultsFile, JSON.stringify(outcomes, null, 2));
+	};
 	return new Promise((resolve, reject) => {
 		const runner = mocha.run((failures) => {
 			if (resultsFile !== undefined) {
 				writeFileSync(resultsFile, JSON.stringify(outcomes, null, 2));
 			}
-			if (failures > 0) {
+			if (runner.stats?.tests === 0) {
+				reject(new Error("没有执行任何测试，请检查测试名称和构建结果"));
+			} else if (failures > 0) {
 				reject(new Error(`${failures} 个测试失败`));
 			} else {
 				resolve();
 			}
 		});
-		runner.on("pass", (test) => outcomes.push({ title: test.fullTitle(), state: "passed", durationMs: test.duration, error: undefined }));
-		runner.on("fail", (test, error: Error) => outcomes.push({ title: test.fullTitle(), state: "failed", durationMs: test.duration, error: error.stack ?? String(error) }));
+		runner.on("pass", (test) => record({ title: test.fullTitle(), state: "passed", durationMs: test.duration, error: undefined }));
+		runner.on("fail", (test, error: Error) => record({ title: test.fullTitle(), state: "failed", durationMs: test.duration, error: error.stack ?? String(error) }));
 	});
 }
 

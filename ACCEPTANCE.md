@@ -1,148 +1,83 @@
-# Pi Harness 验收记录
+# Pi Harness 0.2.0 验收记录
 
-## 交付物
+## 环境与证据
 
-- 安装包：`.\pi-harness-0.1.0.vsix`，1,295,824 字节，SHA-256 `4c46d84440d604b3e7cc7060d213a9aa0171fe66773d4ebba08a5af440c2b03c`。包内文件为 `package.json`、`readme.md`、`INSTALL.md`、`dist/extension.js` 和 `dist/pi-extension/index.js`。
-- 安装说明：`INSTALL.md`，安装包中附带同一份。
-- 开发计划：`DEVELOPMENT_PLAN.md`。
+本次检查在 Windows 11 x64 中执行，使用 Pi 1.5.0、Node.js 24.15.0，以及独立 VS Code 1.144.0 和 1.144.1 配置。模型请求连接本机已配置的真实服务，主要模型为 `cliproxyapi/gpt-6-astra`，模型切换使用 `cliproxyapi/gpt-6-luna`。
 
-## 验收环境
+测试目录位于 `./.test-work/`。每次 VS Code 运行分别保存用户目录、扩展目录、工作目录、Pi 会话和子任务资料。日常 VS Code 的扩展文件及用户设置保留原内容；当前日常 `chat.requestQueuing.defaultAction` 已为 `queue`。
 
-- Windows 11，版本 10.0.26200。
-- VS Code Stable 1.144.0（提交 `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`）和 1.144.1（提交 `261c84cb1eddf11235f9e2c921425e9663fbe556`）。两个版本都从本机安装复制到 `.test-work`，删去 `product.json` 中的 `target`，以便携模式运行。每次运行的 `argv.json`、用户数据、扩展和 Pi 会话文件都在 `.test-work` 下该次运行的目录中。
-- Pi 1.5.0（npm 包 `@earendil-works/pi-coding-agent`），Node.js 24.15.0。Pi 沿用本机的登录信息、模型提供方和 Pi 扩展（包括 pi-lens）。
-- 模型 `cliproxyapi/gpt-6-astra`；切换模型的测试另用 `cliproxyapi/gpt-6-luna`。
-- 测试使用的 VS Code 配置中没有登录 GitHub Copilot。
+以下证据路径均相对于项目根目录。各结果文件保存实际测试环境、操作、断言或进程身份。独立 SDK 检查、真实后台集成和界面操作分别记录。
 
-## 安装验收
+## 已完成的检查
 
-执行 `npm run test:acceptance`：打包 VSIX；在验收目录中写入 `argv.json`，内容为 `"enable-proposed-api": ["local.pi-harness"]`；用 VS Code 的命令行把 VSIX 安装到验收目录的 `extensions`；以普通方式启动 VS Code，Pi Harness 不以开发模式加载。一个只用于测试的驱动扩展通过界面完成下列步骤，并把每一步的预期和实际结果写入 `acceptance.json`。安装前、安装后和验收结束时都核对了本机 `~/.vscode/extensions` 中没有 `local.pi-harness`。
+| 范围 | 实际检查 | 证据 |
+| --- | --- | --- |
+| SDK 与存储恢复 | 21 项通过；公开 SDK 导航、当前用户叶子、根用户、连续用户、导航取消、扩展事件错误、SQLite 写入锁与损坏数据库、真实文件冲突及退出后续接 | `.test-work/implementation/history/results.json` |
+| 实际文件提交授权 | 6 项通过；真实 Hub、PiSession、guardian 和模型 write 生成提交身份，FileGate 调用真实后台校验身份并持久保存意图；包括独立 bundle bridge、并发提交、未保存文档、过期身份、停止与释放、空文件和快照保护 | `.test-work/implementation/history/vscode-file-results.json` |
+| 授权记录检查 | 六份实际 SQLite 数据库检查通过；宿主、后台及 guardian 的 PID、创建时间、ownershipId 和全部文件提交身份一致，最终归属为 released | `.test-work/implementation/history/authorized-ownership-results.json` |
+| 执行期间恢复 | 真实主请求执行期间恢复，以及停止后立即恢复；原文件恢复、后续文件保持不存在、旧身份拒绝、受保护操作拒绝、修改保留输入后发送并保存 completed | `.test-work/implementation/history/active-root-test-results.json`、`.test-work/implementation/history/active-root-results.json`、`.test-work/implementation/history/active-root-persistence-results.json` |
+| 未加载会话保护 | 读取持久恢复记录后拒绝归档；后台异常退出后旧归属保存 cleaned，明确发送后恢复事务完成，新归属正常释放 | `.test-work/implementation/history/unloaded-archive-test-results.json`、`.test-work/implementation/history/unloaded-archive-persistence-results.json` |
+| 实际 UI 记录续接 | 复制真实 UI JSONL 与 SQLite 后使用 SDK 续接，恢复操作为 completed，待恢复记录为空 | `.test-work/implementation/history/system-update-results.json` |
+| 双会话资源 | 两份真实 SDK 会话分别持有模型与资源对象；关闭 A 后 B 的 MCP 继续连接 | `.test-work/implementation/runtime/resource-results.json` |
+| 资源诊断 | 十一项真实诊断通过；显式资源缺失、解析失败、resources_discover 返回的缺失模板及主题、正常重名选择均有检查 | `.test-work/implementation/runtime/diagnostics/1793787359641/results.json` |
+| 资源重新读取 | 同一 SessionManager 在两代运行时中读取修改后的技能、模板、AGENTS.md、扩展及模型；默认设置和扩展参数保留，启动与关闭各执行一次 | `.test-work/implementation/runtime/reload-resources/1793786413001/results.json` |
+| MCP 配置与连接 | 八项通过；无效配置、连接程序不存在、真实连接握手超时、实际服务 needs-auth，以及修正配置后的重新加载 | `.test-work/implementation/runtime/mcp-failure/1793786225369/results.json` |
+| child 关闭错误 | 真正 SDK child 的扩展关闭操作读取失效文件；所属关闭接口报告原因并保留保护状态 | `.test-work/implementation/runtime/child-shutdown/1793784546322/results.json` |
+| 兼容来源 | Node Inspector 记录实际执行的工厂；主会话和 child 加载包内兼容来源，原安装来源没有执行，child 没有重复初始化父 subagents factory | `.test-work/implementation/runtime/compat-sources/1793785776125/results.json` |
+| 进程生命周期 | 两个真实管理实例争用同一会话、所属权限释放、后台根进程退出后的后代清理、辅助程序退出后提交清理证明；正常清理样本为 218 毫秒 | `.test-work/implementation/windows/lifecycle-results.json` |
+| 所有者异常退出 | 宿主退出后辅助程序独立完成清理、两个所有者结束后的命名 Job 接管、缺少退出证明时拒绝接管 | `.test-work/implementation/windows/owner-exit-results.json` |
+| 启动取消 | 实际辅助程序启动在 0、1、5、10、25 毫秒取消，及握手完成后关闭；每次等待真实进程退出，均在四秒内结束 | `.test-work/implementation/windows/startup-cancel-results.json` |
+| 原生模块 | VS Code 1.144.0 的真实 Extension Host 加载 Koffi 3.3.6，执行 Job 与进程管理检查 | `.test-work/implementation/windows/vscode-host-results.json` |
+| 文件监视 | 四十次真实检查通过；已有目录和尚未创建的目录交替运行，ready 后立即创建多层目录及 SKILL.md，并同时监视相邻设置文件 | `.test-work/implementation/windows/watcher-results.json` |
+| 两个宿主版本的界面 | 多目录选择与技能更新、全局资源监视、技能正文一次展开、文件附件、列表悬停、唯一状态按钮、独立进程 CPU/RSS、Enter 排队及 Alt+Enter 引导通过 | `.test-work/implementation/windows/ui-host/1793786367376/checks.json`、`.test-work/implementation/windows/ui-host/1793787054297/checks.json` |
+| 模型与终端 | 两个真实模型切换、所属会话关闭后交给终端、模型目录读取时后台退出并在清理后重新取得模型通过 | `.test-work/implementation/model-regression.log` |
+| 模型认证失败 | 实际模型服务对无效凭据返回 401，错误显示且共享后台继续运行 | `.test-work/implementation/auth-native-regression.log` |
+| 子任务与请求身份 | 五项通过；同文跨队列、steer 文件归属、前台 child 与后台 runner 并行、第三会话 reload、多层子任务恢复，以及关闭错误保护 | `.test-work/run-2026-11-04T11-30-14-089Z/results.json`、`.test-work/implementation/npm-test-release.log` |
+| Chat reload 入口 | 真实空白草稿 `/reload`、会话列表菜单、模型列表为空时的命令面板均通过；目录正确，ID、文件、后台 PID 保留，没有模型消息 | `.test-work/implementation/windows/reload-ui-host/1793788379720/checks.json` |
+| 正常关闭与重开 | 两次窗口均以退出码 0 结束；继续同一会话，两代写入归属均为 released，宿主、后台与辅助程序全部退出 | `.test-work/implementation/reopen-confirmed-close.log`、`.test-work/implementation/windows/reopen-confirmed-ownership.json` |
+| 实际扩展工具 | Codemode 读取真实文件，Tool Search 加载工具后调用实际 MCP；两个会话的 edit 和 TypeScript 主语言服务检查通过 | `.test-work/implementation/history/tools/results.md` |
+| pi-lens 会话隔离 | 三项真实 Host 检查通过；A 和 B 的自动编辑检查使用各自目录，A 关闭后 B 继续编辑并获得实际 LSP 诊断；两份最终归属释放，十三个记录进程全部退出 | `.test-work/implementation/history/tools/run-2026-11-04T10-55-28-552Z/results.json`、`.test-work/implementation/history/tools/run-2026-11-04T10-55-28-552Z/automatic-isolation-results.json`、`.test-work/implementation/history/tools/run-2026-11-04T10-55-28-552Z/observed-process-exit-verification.json` |
+| token 统计缓存 | 十二项真实文件变化检查通过；实际 63,638 条历史记录与原实现逐字段一致，重复刷新约 93 毫秒 | `.test-work/implementation/windows/token-cache/1793789889835/results.json`、`.test-work/implementation/windows/token-cache-real/1793789973754/results.json` |
+| 关闭期限 | 实际 BackendReload 在 10,356 毫秒报告超时，立即重试被拒绝；真实关闭完成后重试成功，最终归属释放及进程退出 | `.test-work/implementation/windows/close-timeout-host/1793790257834/close-timeout/verification.json` |
+| 同步关闭期限 | 真实扩展同步等待 11 秒，BackendReload 在 11,034.5 毫秒报告十秒期限；实际操作结束后重新加载至第二代 | `.test-work/implementation/runtime/sync-close/1793790962145/results.json` |
+| 同目录语言服务 | 两个真实 SDK 会话分别获得 TypeScript 诊断；关闭 A 后 B 继续，重新创建 A 后两者继续；目录登记与所属 LSP 子进程正确释放 | `.test-work/implementation/runtime/lens-same-directory/1793790892779/results.json` |
+| checkpoint 保存 | 实际 checkpoint 写入期间关闭，3,738 毫秒完成；完整 graph 保存 96 个文件、5,183 个节点和 11,765 条边，独立校验与进程退出检查通过 | `.test-work/implementation/history/tools/checkpoint/1793791001664/results.json` |
+| 目录刷新与分叉 | 连续二十次实际目录刷新均取得 29 个模型；独立 Host 七次刷新、真实分叉及后续模型请求通过，源历史保留、后台身份保持、最终归属释放 | `.test-work/implementation/runtime/catalog-reload/1793791412353/results.json`、`.test-work/implementation/history/tools/run-2026-11-04T11-26-19-967Z/results.json` |
+| 跨窗口菜单权限 | 第二个真实窗口通过会话右键菜单 reload，被第一窗口的写入权限阻止；第一窗口正常释放后，同一菜单重新加载相同会话成功，两笔归属最终 released | `.test-work/implementation/windows/ownership-menu-host/1793791694610/contender/checks.json`、`.test-work/implementation/windows/ownership-menu-host/1793791694610/ownership-exit.json` |
 
-下列记录来自 VS Code 1.144.0 的验收目录 `.test-work/acceptance-2026-11-03T06-59-34-885Z`。
+## 完整集成与安装检查
 
-### 1. 安装与授权
+构建使用 `npm run build`，VSIX 构建使用 `npm run package`。生产依赖包括 Koffi 3.3.6 的 Windows x64 原生模块、Jiti、chokidar 5.0.0 和兼容包所需依赖。最终安装包的安装结果、SHA-256、源码核对和进程退出证据记录于 `.test-work/implementation/verification-final.json`；包内文件核对记录于 `.test-work/implementation/vsix-verification.json`。
 
-- 预期：扩展从验收目录的 `extensions` 加载，实验接口可用，找到 Pi 1.5.x。
-- 实际：扩展目录为 `.test-work\acceptance-2026-11-03T06-59-34-885Z\extensions\local.pi-harness-0.1.0`；Pi 1.5.0；Node.js v24.15.0。
-- 结果：通过。
+| 检查 | 当前状态 | 记录 |
+| --- | --- | --- |
+| TypeScript 类型检查 | 冻结源码通过 | `.test-work/implementation/typecheck-final.log` |
+| 共享后台、十二个会话、reload、子任务 | 后台九项、子任务五项全部通过 | `.test-work/run-2026-11-04T11-30-14-089Z/results.json` |
+| 真实模型服务认证拒绝 | 已通过 | `.test-work/implementation/auth-native-regression.log` |
+| 全部扩展宿主测试 npm test | 47 项全部通过；窗口退出码 0，59 个数据库的归属记录及相关进程退出核对通过；停止操作耗时 4,521 毫秒 | `.test-work/implementation/npm-test-release.log`、`.test-work/run-2026-11-04T11-30-14-089Z/ownership-release-verification.json` |
+| 界面操作 test:ui 测试组 | 九项全部通过；窗口退出码 0，五笔归属及进程退出核对通过 | `.test-work/ui-2026-11-04T11-33-00-266Z/ui-results.json`、`.test-work/ui-2026-11-04T11-33-00-266Z/ownership-release-verification.json` |
+| 重开窗口 test:reopen 测试组 | 两阶段通过；同一会话，两笔归属及进程退出核对通过 | `.test-work/implementation/reopen-release.log`、`.test-work/reopen-2026-11-04T11-36-52-708Z/ownership-release-verification.json` |
+| 无实验接口授权 test:no-proposed 测试组 | 已通过；缺少授权时显示明确的 chatSessionsProvider 错误 | `.test-work/implementation/no-proposed-release.log` |
+| VS Code 1.144.1 安装预检 | 官方 CLI 安装，实际技能、模型附件、reload、列表与状态按钮通过；正常退出及归属核对通过 | `.test-work/implementation/windows/installed-host/1793792244393/checks.json`、`.test-work/implementation/windows/installed-host/1793792244393/ownership-exit.json` |
+| 最终 VSIX 安装 npm run test:acceptance 与 1.144.1 独立安装 | 每项操作结果、未执行项目、安装路径与进程退出核对均保存于最终安装记录 | `.test-work/implementation/verification-final.json`、`.test-work/implementation/acceptance-release.log` |
 
-### 2. 附加选区
+## 独立代码审查
 
-- 会话：`01ccb1e0-b980-4125-a8e7-6a660c96ea13`。
-- 操作：把 `calc.ts` 第 1–3 行作为选区附加到请求，请 Pi 修复其中的错误。
-- 预期：Pi 收到的用户消息包含选区文字。
-- 实际：用户消息为原文、一个空行和 `<vscode-context>` 块，块中的 `<selection path="…\calc.ts" lines="1-3" unsaved="false">` 包含这三行。
-- 结果：通过。
+主代理集成三个使用 ultra 思考强度的子代理工作。独立审查记录位于 `.test-work/implementation/history/review.md` 和 `.test-work/implementation/windows/review.md`；运行时检查记录位于 `.test-work/implementation/runtime/review.md`。冻结源码的独立复核没有剩余确认代码问题；后台、宿主、恢复及界面的组合检查已包含在完整集成测试中。
 
-### 3. Pi 修改文件
+## 外部条件与验证范围
 
-- 会话：`01ccb1e0-b980-4125-a8e7-6a660c96ea13`。
-- 工具调用依次为 `edit`、`read`、`edit`、`bash`。第一次 `edit` 被本机 Pi 加载的 pi-lens 扩展拒绝，理由是修改前需要先读取文件；Pi 读取后再次 `edit` 成功，随后用 `bash` 运行 `node --experimental-strip-types`，断言 `add(2, 3)`、`add(-2, 3)`、`add(0, 0)` 的结果，命令正常结束。
-- 文件差异：
+- 测试配置没有登录 GitHub Copilot。只有 vscode.lm.tools 实际提供相关工具后，才能执行 Copilot 查询工具验收；缺失项目单独记录为未执行。
+- WinEventHook 正向探针已确认能记录可见顶层窗口。1.144.0 观察 314572 毫秒，1.144.1 观察 325225 毫秒，关联测试进程的顶层 SHOW 与无法确认归属的 SHOW 均为零；证据为 `.test-work/implementation/windows/chat-ui-windows-1.144.0.json` 和 `.test-work/implementation/windows/chat-ui-windows-1.144.1-final.json`。用户报告的短暂窗口尚未复现，原因仍未确认。
+- VS Code 1.144.0 和 1.144.1 关闭未提交 Editor 草稿后没有发出输入状态释放事件；草稿提交后原 untitled 状态同样保留。公开接口没有提供准确的草稿 URI 释放通知，相关监视保留至扩展停用。这两项检查保持未通过，证据为 `.test-work/implementation/windows/ui-host/1793787054297/lifecycle-issues.json`；宿主源码依据见 `.test-work/implementation/windows/review.md`。
+- 文件恢复覆盖通过 Harness 文件接口完成的 edit、write 及其子任务写入。直接由 shell 或第三方工具改动的文件不在该接口的恢复范围内。
+- 当前版本使用 VS Code 的 proposed API，并依赖已核查版本的输入状态行为；升级 VS Code 后需要重新执行兼容检查。
+- pi-lens 的 TypeScript 主语言服务和编辑后自动检查已经通过。两次包含全部辅助语言服务的查询在安装启动期间超时，辅助服务完整性未计为通过；具体调用及结果见 `.test-work/implementation/history/tools/results.md`。
 
-  ```diff
-   export function add(a: number, b: number): number {
-  -	return a - b;
-  +	return a + b;
-   }
-  ```
+## 交付路径
 
-- 会话中有一条 `pi-harness.edit` 记录，修改前后内容的 SHA-256 以 `9f92e9b4` 和 `75fc6153` 开头，两份内容都保存在扩展的快照目录中。
-- 结果：通过。
-
-### 4. 打开差异
-
-- 操作：对上一步的修改执行“打开 Pi 修改的差异”。
-- 实际：差异编辑器左侧为修改前的快照，含 `a - b`；右侧含 `a + b`。
-- 结果：通过。
-
-### 5. Copilot 查询工具
-
-- 预期：Pi 调用 `copilot_searchWorkspaceSymbols` 并返回项目中的符号。
-- 实际：测试配置没有登录 GitHub Copilot，`vscode.lm.tools` 列出的 40 个工具中没有 `copilot_searchWorkspaceSymbols`、`copilot_searchCodebase` 和 `copilot_getErrors`。
-- 结果：未执行。
-
-### 6. 引用回复
-
-- 会话：`6d37ecbf-6092-4f82-8752-9d86d75d732c`。
-- 操作：在回复中选中 `QUOTE-THIS-LINE`，按 `Ctrl+Alt+Q`。
-- 实际：输入框内容为 `> QUOTE-THIS-LINE`，剪贴板恢复为引用前写入的文字。
-- 结果：通过。
-
-### 7. 从第二条请求分叉并恢复文件
-
-- 源会话：`a63c3e70-990a-430a-8bb5-f1561fb29f4e`。第一条请求用 `write` 把 `steps.txt` 写为 `one`，第二条改为 `two`。
-- 操作：在第二条请求上点击 Fork Conversation，选择“恢复文件并分叉”，再点击通知中的“把原请求填入输入框”。
-- 实际：`steps.txt` 从 `two` 恢复为 `one`；新会话 `01a1a037-c74c-7259-afef-c5f607193e81` 只含第一条请求；第二条请求的文字回到输入框。
-- 结果：通过。
-
-### 8. 保护未保存的修改
-
-- 会话：`aa897bf4-f01e-436f-8260-12985691060c`。
-- 操作：Pi 先运行一条持续 12 秒的 `bash` 命令，在此期间把编辑器中 `draft.txt` 的第 2 行改为 `typed during the run`，不保存。
-- 实际：Pi 随后的 `edit` 返回错误“…draft.txt 在 VS Code 中有未保存的修改。Pi 不修改该文件，请用户保存或撤销这些修改后再让 Pi 重试。”，Pi 回复 `BLOCKED`。磁盘内容仍为 `first line\nsecond line\n`，编辑器保留未保存的第 2 行。
-- 结果：通过。
-
-### 9. 在终端中继续
-
-- 操作：对源会话 `a63c3e70-990a-430a-8bb5-f1561fb29f4e` 执行会话列表菜单中的“在终端中继续此会话”。
-- 实际：终端的参数为 Pi 的 `cli.js`、`--session <该会话文件>` 和 `--session-dir <会话目录>`；VS Code 中该会话的 Pi 进程已经退出。
-- 结果：通过。
-
-### VS Code 1.144.1
-
-同一个安装包在 1.144.1 上执行同样的验收，验收目录为 `.test-work/acceptance-2026-11-03T07-23-16-028Z`。第 1–4 步和第 6–9 步通过，第 5 步未执行，原因相同。会话为：附加选区并修改文件 `86e4e065-7612-4f0a-ae88-7478762f0678`（工具调用 `edit`、`read`、`edit`、`bash`），引用回复 `bea92637-da3e-4475-9b31-fdd4a7077d53`，分叉源会话 `f621a748-dfe3-4eb8-a91d-938745510f8b`，分叉出的会话 `01a1a04d-1169-7284-9d6f-2c5cbf481bd2`，未保存修改 `6adcc9ab-1216-4338-8720-cf93890c454e`。
-
-## 其他测试
-
-安装验收之后，用同一份代码在两个版本上依次运行下列测试，全部通过。这些测试从源码目录加载扩展，用命令行参数授权实验接口。
-
-### 扩展宿主中的功能测试（`npm test`）
-
-1.144.0 为 `.test-work/run-2026-11-03T07-09-41-560Z`，1.144.1 为 `.test-work/run-2026-11-03T07-33-14-051Z`，两次都是 25 项全部通过。
-
-- 新建 Pi 会话并收到真实模型的回复。
-- Pi 用 `read`、`edit`、`bash` 读取、修改文件并运行验证命令，修改进入快照；第二轮继续同一会话，Pi 回答出第一轮写入的内容。
-- 列出终端中创建的会话，读取历史不改写会话文件；列出会话不创建会话目录；重命名和删除本窗口创建的会话。
-- Pi 运行时发送的引导消息作为同一次运行中的第二条用户消息送达，Pi 的最终回复按引导消息的要求以 `ORANGE` 结尾。
-- 排队的消息在第一轮的最终回复之后作为另一个请求送达。
-- 停止时中止 Pi 的运行和正在执行的 60 秒命令，用时 11.3 秒（1.144.0）和 12.0 秒（1.144.1），`bash` 的结果为已中止。
-- `/fork` 复制整个会话，原会话保留。
-- 附加的选区使用编辑器中未保存的文字；编辑器中有未保存修改的文件 Pi 不修改；Pi 运行期间用户开始修改的文件 Pi 不覆盖；截图作为图片送达；用户保留 Pi 的修改后，下一个请求携带 `<edited-files>` 中的 `kept: …events.txt`。
-- Pi 进程在运行中被结束后本轮中断，重新发送时恢复同一会话；两个会话同时运行，输出各自写入自己的会话；另一个窗口持有写入权限时不启动 Pi；空闲超时后结束进程、下次发送时重新启动；从历史打开的会话被 VS Code 释放且 Pi 空闲时结束进程。
-- 在模型选择器中换用 `cliproxyapi/gpt-6-luna` 后，会话中的 `model_change` 依次为 `gpt-6-astra`、`gpt-6-luna`。
-- 在终端中继续会话时先结束 VS Code 中的 Pi 进程并释放写入权限。
-- 认证失败：模型服务对请求返回 401，本轮的错误为 `401: {"message":"Incorrect API key provided",…}`，Pi 进程保持运行。
-- 读取模型列表的 Pi 进程在启动时以退出码 9 结束后，输出通道记录“…已退出，退出码 9，信号 无。没有标准错误输出。”，下一次读取重新启动 Pi 并取得模型。
-- VS Code 中实际存在的 Copilot 工具：没有登录 Copilot，列表为空。
-
-### 界面操作测试（`npm run test:ui`）
-
-1.144.0 为 `.test-work/ui-2026-11-03T07-04-17-086Z`，1.144.1 为 `.test-work/ui-2026-11-03T07-27-41-402Z`，两次都是 8 项全部通过。
-
-- Pi 扩展的对话框：选择、确认、输入在聊天内回答，编辑在无标题文档中完成后文档不保存直接关闭，带超时的选择在到期时关闭。Pi 扩展收到的回答为 `{"choice":"banana","confirmed":true,"text":"Alice","edited":"prefilled note","timed":null}`。
-- 继续终端创建的会话前，模态对话框确认其他写入方已关闭。
-- 在输入框中附加文件、图片、符号（通过 Add Context... 的 Symbols...）和问题（通过 Problems...，来自 VS Code 自带的 TypeScript 语言功能）。Pi 收到 `<file>`、`<selection>`、`<diagnostics>` 三个部分和一张图片，诊断一行为 `…shapes.ts:5:14 [error ts(2322)] Type 'string' is not assignable to type 'number'.`，回复为 `CODE=FILE-TOKEN-5813; COLOR=blue; SYMBOL=computeArea; ERROR=2322`。
-- 从第二条请求分叉并恢复文件，原请求填回输入框；只分叉时文件不变。
-- 在 Pi 会话的请求上按 Delete 只显示提示，请求和文件不变。
-- 选中回复中的 `QUOTE-ME #tag /path @user` 后按 `Ctrl+Alt+Q`，输入框出现引用，剪贴板保持原样；没有选中文字时提示先选中。
-- 在第三条请求上按 Enter 编辑后提交并确认：VS Code 撤销第三条请求中 Pi 的写入，`fork.txt` 从 `v3` 回到 `v2`；Pi 的当前分支退回到第二轮之后，编辑后的请求接在第二轮后面，原来的第三轮作为另一个分支保留在会话文件中。
-
-### 重新启动 VS Code（`npm run test:reopen`）
-
-1.144.0 为 `.test-work/reopen-2026-11-03T07-07-49-488Z`（会话 `a3c29c2b-9c4d-4613-9a19-6a07f097a694`），1.144.1 为 `.test-work/reopen-2026-11-03T07-31-20-204Z`。第一次启动新建会话并收到回复；关闭后用同一用户目录再次启动，会话出现在列表中，打开历史、确认其他写入方已关闭后继续发送，第二条消息写入同一个会话文件。两个版本都通过。
-
-### 没有实验接口授权（`npm run test:no-proposed`）
-
-不传入 `--enable-proposed-api` 启动时，扩展激活失败，错误为 `Extension 'local.pi-harness' CANNOT use API proposal: chatSessionsProvider.`，Pi 会话类型不出现。两个版本都通过。
-
-## 没有执行的项目
-
-- **Copilot 查询工具。** 测试使用的 VS Code 配置没有登录 GitHub Copilot，`copilot_searchWorkspaceSymbols`、`copilot_searchCodebase`、`copilot_getErrors` 不存在，Pi 调用这些工具的流程没有执行。在登录了 Copilot 的配置中运行 `npm run test:acceptance`，第 5 步会执行并断言 Pi 调用了 `copilot_searchWorkspaceSymbols` 且回复中有 `calc.ts`。
-
-## 使用限制
-
-- 引用回复通过系统剪贴板取得选中的文字，执行后恢复剪贴板中原来的文字；剪贴板中原有的图片和富文本不保留。Windows 锁屏期间剪贴板无法读写，引用不起作用。
-- 编辑请求时 VS Code 只撤销 Pi 在这些请求的响应中用 `edit` 和 `write` 做的修改；`bash` 命令改动的文件，以及会话被重新打开后接回显示的那一轮中的修改不撤销。分叉时的“恢复文件”同样只覆盖 `edit` 和 `write`。
-- Pi 会话中请求上的 Delete 键（VS Code 的 Restore Checkpoint）只显示提示，还原使用编辑请求或 Fork Conversation。
-- 测试期间，Pi 进程有两次在启动阶段以 3221226505（0xC0000409）退出，没有任何输出：一次是读取模型列表的进程，一次是会话进程，分别在两次扩展宿主测试中。单独重复启动 Pi 的 40 次尝试没有复现，Windows 事件日志和错误报告中也没有记录。Node.js 自身中止（`process.abort()`、堆内存耗尽）时的退出码是 134，这个状态码来自 Pi 进程中的原生代码。会话启动时出现这种情况，本轮显示退出码，重新发送即可；读取模型列表时出现，下一次读取自动重新启动 Pi。
+- 安装包：`./pi-harness-0.2.0.vsix`；SHA-256 和安装验证记录见 `.test-work/implementation/verification-final.json`。
+- 安装与使用：`./INSTALL.md`。
+- 开发说明：`./DEVELOPMENT_PLAN.md`。
+- 兼容来源与许可：`./compat/SOURCES.md`。
+- 本次实施记录：`./.test-work/implementation/`。

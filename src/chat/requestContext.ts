@@ -52,11 +52,12 @@ async function documentFor(uri: vscode.Uri): Promise<vscode.TextDocument> {
  * 把本轮引用转换为发送给 Pi 的上下文：文件和选区读取编辑器中的文字（包含未保存内容），
  * 诊断只展开用户选择的项目，图片转为 Pi 的 ImageContent。
  */
-export async function buildRequestContext(request: vscode.ChatRequest): Promise<RequestContext> {
+export async function buildRequestContext(request: vscode.ChatRequest, excludedReferenceIds: ReadonlySet<string> = new Set()): Promise<RequestContext> {
 	const references: ReferenceRecord[] = [];
 	const sections: string[] = [];
 	const images: ImageContent[] = [];
 	for (const reference of request.references) {
+		if (excludedReferenceIds.has(reference.id)) continue;
 		const value = reference.value;
 		if (value instanceof vscode.Location) {
 			const document = await documentFor(value.uri);

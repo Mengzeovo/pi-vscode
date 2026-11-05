@@ -1,13 +1,14 @@
 import { existsSync } from "node:fs";
 import * as vscode from "vscode";
 import type { PiHub } from "../session/hub";
-import { CancelledByUser, type PiSession, type SessionLocation } from "../session/piSession";
+import { CancelledByUser, type PiSession, type PromptInput, type SessionLocation } from "../session/piSession";
 import { parseSessionResource } from "../sessions/sessionUri";
 import { enabledCopilotTools } from "../tools/copilotTools";
 import { readSessionRecords } from "./historyRenderer";
 import { selectionFromRequest } from "./piModels";
 import { buildRequestContext, composePrompt } from "./requestContext";
 import { FOLDER_GROUP, valuesFromOptions } from "./sessionOptions";
+import type { PiCustomizationProvider } from "./customizationProvider";
 
 type ChatContext = vscode.ChatContext;
 
@@ -17,7 +18,7 @@ function errorResult(message: string, level = vscode.ChatErrorLevel.Error): vsco
 
 /** Pi 会话类型的默认 participant：第一条消息和后续消息都经过这里送往 Pi */
 export class PiParticipant {
-	constructor(private readonly hub: PiHub) {}
+	constructor(private readonly hub: PiHub, private readonly customizations: PiCustomizationProvider) {}
 
 	readonly handler: vscode.ChatExtendedRequestHandler = async (request, context, stream, token) => {
 		const sessionContext = context.chatSessionContext;
@@ -28,7 +29,6 @@ export class PiParticipant {
 			return errorResult("工作区未受信任，Pi 不会启动。");
 		}
 		const sessionId = parseSessionResource(sessionContext.chatSessionItem.resource);
-		const selection = selectionFromRequest(request);
 		// 工作目录取自 VS Code 为该会话保存的选项值；选项组的条目由所有 Pi 会话共用
 		const values = valuesFromOptions(sessionContext.initialSessionOptions);
 		const location = await this.locationFor(sessionId, values.get(FOLDER_GROUP));
@@ -47,33 +47,44 @@ export class PiParticipant {
 			}
 			throw error;
 		}
+		if (request.command === "reload") {
+			stream.progress(session.isBusy ? "等待当前执行结束后重新加载 Pi 会话" : "正在重新加载 Pi 会话");
+			await session.reload();
+			stream.markdown("Pi 会话资源已重新加载。");
+			this.customizations.refresh();
+			this.hub.notifyChanged(sessionId);
+			return {};
+		}
 		await session.ensureStarted();
 		this.hub.notifyChanged(sessionId);
-		if (!session.isBusy) {
-			await this.alignWithVsCodeHistory(session, location, context.history);
-		}
 		if (request.command === "compact") {
 			await session.compact(stream);
 			return {};
 		}
-		const requestContext = await buildRequestContext(request);
-		let promptText = composePrompt(request.prompt, requestContext.contextBlock);
-		if (await session.isExtensionCommand(request.prompt)) {
+		const selection = selectionFromRequest(request);
+		const skillRequest = await this.customizations.consumeSkillRequest(sessionContext.chatSessionItem.resource, request, token);
+		const requestContext = await buildRequestContext(request, skillRequest.excludedReferenceIds);
+		let promptText = composePrompt(skillRequest.prompt, requestContext.contextBlock);
+		if (await session.isExtensionCommand(skillRequest.prompt)) {
 			if (requestContext.references.length > 0) {
 				return errorResult("Pi 扩展命令不接收附件，请去掉附件后重新发送。");
 			}
-			promptText = request.prompt;
+			promptText = skillRequest.prompt;
 		}
-		const outcome = await session.runPrompt(
-			{
+		const input: PromptInput = await session.applyRecoveryInput({
 				requestId: request.id,
 				promptText,
 				userText: request.prompt,
+				basePrompt: skillRequest.prompt,
+				contextBlock: requestContext.contextBlock,
 				references: requestContext.references,
 				images: requestContext.images,
 				enabledCopilotTools: enabledCopilotTools(request),
 				selection,
-			},
+		});
+		await this.alignWithVsCodeHistory(session, location, context.history, input);
+		const outcome = await session.runPrompt(
+			input,
 			context,
 			stream,
 			token,
@@ -91,7 +102,7 @@ export class PiParticipant {
 	 * 再把编辑后的文字作为新请求发来。本窗口显示过的 Pi 用户消息不在 VS Code 的历史中时，
 	 * 把 Pi 的当前分支退回到第一条被移除的用户消息之前，使两边的对话保持一致。
 	 */
-	private async alignWithVsCodeHistory(session: PiSession, location: SessionLocation, history: ChatContext["history"]): Promise<void> {
+	private async alignWithVsCodeHistory(session: PiSession, location: SessionLocation, history: ChatContext["history"], input: PromptInput): Promise<void> {
 		if (location.sessionFile === undefined || !existsSync(location.sessionFile)) {
 			return;
 		}
@@ -121,14 +132,16 @@ export class PiParticipant {
 			throw new Error("VS Code 中的请求与 Pi 会话的当前分支不一致，请重新打开该会话后再发送。");
 		}
 		const target = users[firstMissing];
-		await session.rewindBefore(target.id, target.parentId);
+		const rootRequestIds = users.slice(firstMissing).map((entry) => requestIdsByEntry.get(entry.id) ?? entry.id);
+		await session.rewindBefore(target.id, target.parentId, input, rootRequestIds);
 	}
 
 	/** 已有会话直接返回位置；新会话在第一条消息时按“工作目录”选项或唯一的工作区文件夹确定工作目录 */
 	private async locationFor(sessionId: string, selectedFolder: string | undefined): Promise<SessionLocation> {
-		if (this.hub.pendingSession(sessionId)) {
+		const pending = this.hub.pendingSession(sessionId);
+		if (pending) {
 			const folders = this.hub.folders();
-			const cwd = folders.length > 1 ? selectedFolder : folders[0];
+			const cwd = pending.cwd ?? (folders.length > 1 ? selectedFolder : folders[0]);
 			if (cwd === undefined) {
 				throw new Error("没有打开的本地文件夹，Pi 需要一个工作目录");
 			}

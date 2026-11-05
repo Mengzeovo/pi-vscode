@@ -30,6 +30,7 @@ async function main(): Promise<void> {
 		extensionTestsEnv: {
 			...portable,
 			PI_CODING_AGENT_SESSION_DIR: layout.sessionDir,
+			PI_SUBAGENTS_TEMP_ROOT: join(layout.base, "subagents"),
 			PI_HARNESS_TEST_RUN: runName,
 			PI_HARNESS_TEST_WORKSPACE_A: layout.workspaceA,
 			PI_HARNESS_TEST_WORKSPACE_B: layout.workspaceB,

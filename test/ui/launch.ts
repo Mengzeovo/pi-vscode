@@ -46,6 +46,9 @@ export async function runWithDriver(run: DriverRun): Promise<boolean> {
 		VSCODE_EXECUTABLE,
 		[
 			run.layout.workspaceA,
+			`--user-data-dir=${run.layout.userDataDir}`,
+			`--extensions-dir=${run.layout.extensionsDir}`,
+			"--new-window",
 			...sourceArgs,
 			`--extensionDevelopmentPath=${join(ROOT, "test", "driver-extension")}`,
 			`--remote-debugging-port=${CDP_PORT}`,
@@ -59,6 +62,7 @@ export async function runWithDriver(run: DriverRun): Promise<boolean> {
 				...process.env,
 				...portable,
 				PI_CODING_AGENT_SESSION_DIR: run.layout.sessionDir,
+				PI_SUBAGENTS_TEMP_ROOT: join(run.layout.base, "subagents"),
 				PI_HARNESS_TEST_RUN: run.runName,
 				PI_HARNESS_TEST_WORKSPACE_A: run.layout.workspaceA,
 				PI_HARNESS_TEST_WORKSPACE_B: run.layout.workspaceB,
@@ -75,22 +79,27 @@ export async function runWithDriver(run: DriverRun): Promise<boolean> {
 			stdio: "inherit",
 		},
 	);
-	const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
+	let processExited = false;
+	let forcedExit = false;
+	const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => { processExited = true; resolve(code); }));
 	const killTree = (): void => {
-		if (child.pid !== undefined && child.exitCode === null) {
+		if (!processExited && child.pid !== undefined) {
+			forcedExit = true;
 			spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], { windowsHide: true });
 		}
 	};
 	const timer = setTimeout(killTree, TIMEOUT_MS);
+	let forcedExitTimer: ReturnType<typeof setTimeout> | undefined;
 	// 驱动扩展写入结束标记后请求退出；仍有 Pi 会话在运行时 VS Code 会询问是否退出，等待一段时间后结束进程树
 	const poll = setInterval(() => {
 		if (existsSync(done)) {
 			clearInterval(poll);
-			setTimeout(killTree, 20_000);
+			forcedExitTimer = setTimeout(killTree, 20_000);
 		}
 	}, 1000);
 	const code = await exited;
 	clearTimeout(timer);
+	clearTimeout(forcedExitTimer);
 	clearInterval(poll);
 	console.log(`VS Code 退出，退出码 ${code ?? "无"}；测试目录 ${run.layout.base}`);
 	if (existsSync(results)) {
@@ -109,5 +118,6 @@ export async function runWithDriver(run: DriverRun): Promise<boolean> {
 	if (!outcome.ok) {
 		console.log(`测试失败：${outcome.error ?? ""}`);
 	}
-	return outcome.ok;
+	if (forcedExit) console.log("测试窗口未正常退出，进程已终止");
+	return outcome.ok && !forcedExit && code === 0;
 }

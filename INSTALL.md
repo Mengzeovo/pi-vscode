@@ -1,72 +1,102 @@
-# Pi Harness 安装说明
+# Pi Harness 0.2.0 安装与使用
 
-Pi Harness 把 Pi 编码代理接入 VS Code 侧边栏的 Chat，作为一种聊天会话类型使用。
+## 运行条件
 
-## 版本要求
+- Windows 11 x64。
+- VS Code Stable 1.144.0 或 1.144.1，启用 `local.pi-harness` 使用的实验接口。其他版本需要重新验证。
+- Pi 精确版本 `1.5.0`，npm 包为 `@earendil-works/pi-coding-agent`。
+- PATH 中的 Node.js 至少为 `24.15.0`。后台的恢复记录使用 `node:sqlite`。
+- 本地工作区已经获得 VS Code 信任；项目 `.pi` 资源按 Pi 的信任设置加载。
 
-- Windows。
-- VS Code Stable 1.144.0（提交 `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`）或 1.144.1（提交 `261c84cb1eddf11235f9e2c921425e9663fbe556`）。两个版本中扩展使用的实验接口声明完全相同。其他版本的实验接口可能变化，需要重新测试。
-- Pi 1.5.x：全局安装的 npm 包 `@earendil-works/pi-coding-agent`。
-- PATH 中的 `node` 满足 Pi 要求的版本（Pi 1.5.0 要求 `>=22.19.0`）。
+## 安装
 
-## 安装 Pi
+安装 Pi，并在终端中完成模型配置或登录：
 
-1. 安装 Pi：
+```powershell
+npm install -g @earendil-works/pi-coding-agent@1.5.0
+pi
+```
 
-   ```powershell
-   npm install -g @earendil-works/pi-coding-agent@1.5.0
-   ```
+需要使用项目 `.pi` 中的资源时，在项目目录运行 Pi，通过 `/trust` 保存信任选择。
 
-2. 在终端中运行一次 `pi`，完成登录或模型配置，确认 Pi 可以正常回复。
-3. Pi 在 VS Code 中以 RPC 模式运行，不显示项目信任提示。需要加载项目目录 `.pi` 中的扩展、技能和提示模板时，在该项目目录的终端中运行 `pi`，执行 `/trust` 保存信任决定。
+安装交付的扩展包：
 
-## 安装扩展
+```powershell
+code --install-extension pi-harness-0.2.0.vsix
+```
 
-1. 安装 VSIX：
+在命令面板执行 **Preferences: Configure Runtime Arguments**，在 `argv.json` 的对象中加入：
 
-   ```powershell
-   code --install-extension pi-harness-0.1.0.vsix
-   ```
+```json
+"enable-proposed-api": ["local.pi-harness"]
+```
 
-   也可以在扩展视图右上角的菜单中选择 Install from VSIX...。
+完全退出 VS Code 后重新启动。在 Chat 的新建会话类型中选择 **Pi**。如果列表中没有 Pi，检查 Extension Host 日志中的实验接口授权错误。远程窗口不提供 Pi 会话。
 
-2. 授权实验接口。在命令面板中执行 Preferences: Configure Runtime Arguments，在打开的 `argv.json` 中加入：
+在用户设置中设置：
 
-   ```json
-   "enable-proposed-api": ["local.pi-harness"]
-   ```
+```json
+"chat.requestQueuing.defaultAction": "queue"
+```
 
-   保存后完全退出 VS Code（关闭所有窗口），再重新启动。只重新加载窗口不会读取 `argv.json`。
+这个设置影响该配置范围内的全部 Chat 会话类型。扩展激活时不会持续写入此设置。本次实施已核对当前日常 VS Code 用户配置为 `queue`。
 
-3. 检查授权。打开 Chat 视图，在新建聊天的会话类型中选择 Pi。出现 Pi 即表示授权生效。没有出现时，在命令面板中执行 Developer: Show Running Extensions 或查看 Output 面板的 Extension Host 日志：出现 `Extension 'local.pi-harness' CANNOT use API proposal` 说明 `argv.json` 没有生效。
+## 会话与输入
 
-## 使用
+- 在 Chat 中新建 Pi 会话。多个工作区文件夹同时打开时，输入区的“工作目录”决定该草稿使用的目录。
+- 在模型选择器中选择 Pi 模型及思考级别。文件、选区、符号、Problems 和图片可以作为附件发送。
+- 当前请求执行期间，按 Enter 将下一条消息加入 VS Code 队列。选择 **Steer with Message** 或对应快捷键可以发送引导消息。
+- 点击停止按钮会停止当前会话的执行及其所属任务。其他会话继续运行。
+- 输入 `/` 可以选择该工作目录的有效 Pi 技能；技能参数和附件随请求提交。
+- 会话列表显示当前工作区的 Pi 历史，包括终端创建的会话。浏览普通历史不会加载该会话的运行资源。
+- 在回复中选择文字后按 `Ctrl+Alt+Q`，以 Markdown 引用格式加入输入框。该功能会恢复剪贴板原有文字，图片和富文本不在恢复范围内。
 
-- **新建会话。** 在 Chat 视图新建聊天时选择 Pi。工作区有多个文件夹时，输入区的“工作目录”选项决定 Pi 的工作目录。
-- **模型和思考级别。** 模型选择器中列出 Pi 已配置的模型，只在 Pi 会话中出现；支持思考的模型在模型选择器中显示思考级别。选择随每条消息生效。
-- **历史会话。** 会话列表显示当前工作区文件夹的 Pi 会话，包括在终端中创建的会话。打开历史不会启动 Pi。
-- **附件。** 可以附加文件、选区、符号、Problems 中的诊断和图片。VS Code 默认在发送前保存已修改的编辑器（设置 `chat.saveBeforeSend`）。
-- **运行中引导。** Pi 运行时输入消息，选择 Steer with Message，消息在 Pi 下一次调用模型之前送达。
-- **停止。** 点击停止按钮会清空 Pi 的消息队列并中止当前运行。
-- **修改与差异。** Pi 的 `edit` 和 `write` 修改显示在 Chat 的文件变更中；工具调用中的“打开差异”显示本次修改前后的内容。Pi 运行期间你在编辑器中修改且尚未保存的文件，Pi 不会覆盖。
-- **编辑请求。** 在一条请求上按 Enter（或点击请求文字）修改后提交。VS Code 确认后撤销该请求及之后请求中 Pi 的文件修改，扩展把 Pi 会话退回到这条请求之前，再发送修改后的文字。原来的对话作为分支保留在 Pi 会话文件中。撤销范围是 Pi 在这些请求的响应中用 `edit` 和 `write` 做的修改；`bash` 命令改动的文件，以及会话被重新打开后接回显示的那一轮中的修改，不会撤销。
-- **分叉。** 在请求上方的工具条中点击 Fork Conversation，可以选择同时把 Pi 用 `edit` 和 `write` 修改过的文件恢复到这条请求之前（`bash` 命令改动的文件不在恢复范围内）；之后通知中的“把原请求填入输入框”会把原请求和附件放回输入框。`/fork` 复制整个会话。
-- **引用回复。** 在回复中选中文字后按 `Ctrl+Alt+Q`，选中的文字以 Markdown 引用格式插入输入框。该命令通过剪贴板取得选中的文字，执行后恢复剪贴板中原来的文字；剪贴板中原有的图片和富文本不会保留。
-- **会话列表菜单。** 右键会话可以重命名、删除（移到回收站）或在终端中继续此会话。在终端中继续之前，扩展先结束该会话在 VS Code 中的 Pi 进程。
-- **Delete 键。** 在 Pi 会话的请求上按 Delete 只显示提示，不执行 VS Code 的还原检查点。
+## 共享后台与状态
 
-## 设置
+每个 VS Code 窗口使用一个 Pi 后台进程和一个进程管理辅助程序。每个 Chat 保存独立的工作目录、模型、历史和扩展资源。
 
-- `piHarness.piPackagePath`：Pi 包的安装目录。留空时通过 `npm root -g` 查找。
-- `piHarness.idleShutdownMinutes`：Pi 会话空闲多少分钟后结束其 Pi 进程，默认 10。下一次发送消息时自动重新启动。
+状态栏固定显示一个 **Pi** 按钮。悬停可查看会话名称、执行状态、后台 PID、CPU、内存及辅助程序占用。统计对应各自进程，不包含全部后代进程占用。
 
-## 同时在终端和 VS Code 中使用同一会话
+`piHarness.sessionResidencyLimit` 默认值为 `10`。超过目标数量后，后台按最近使用顺序释放符合条件的会话。执行中、有界面引用、子任务、待答交互、文件提交或恢复操作的会话继续保留。再次使用已释放的会话时，后台从原会话文件恢复资源。`piHarness.idleShutdownMinutes` 已停用。
 
-同一个会话文件同时被两个 Pi 进程写入会损坏历史。VS Code 在继续一个已有会话之前会请你确认已关闭终端中打开的同一会话；多个 VS Code 窗口之间由扩展自动互斥，同一会话只能在一个窗口中运行。需要回到终端时，使用会话右键菜单中的“在终端中继续此会话”。
+## 单会话 reload
 
-## 常见问题
+可以在当前 Pi Chat 中执行 `/reload`，使用会话列表菜单的“重新加载会话”，或在命令面板执行 **Pi: 重新加载会话**。Pi 扩展中的 `ctx.reload()` 进入同一流程。
 
-- **新建聊天中没有 Pi。** 检查 `argv.json` 是否包含 `"enable-proposed-api": ["local.pi-harness"]`，并确认完全退出后重新启动了 VS Code。远程窗口中不提供 Pi。
-- **模型选择器中没有 Pi 的模型，无法发送。** 打开 Output 面板，选择 Pi Harness 查看原因：工作区未受信任、Pi 没有可用模型、找不到 Pi 包、PATH 中的 `node` 版本不满足要求，或读取模型列表的 Pi 进程异常退出。处理之后点击提示中的“刷新 Pi 模型列表”，或在命令面板中执行同名命令。
-- **发送后提示“Pi 进程在完成握手前退出”。** Pi 在启动过程中结束了，提示中给出退出码和 Pi 的标准错误输出。重新发送会启动新的 Pi 进程。反复出现时，在同一目录的终端中运行 `pi`，检查 Pi 及其扩展能否正常启动。
-- **Copilot 工具。** Pi 可以调用 `copilot_searchWorkspaceSymbols`、`copilot_searchCodebase` 和 `copilot_getErrors`，前提是 VS Code 中存在这些工具（需要 GitHub Copilot 可用）。
+reload 重新读取当前会话的扩展、技能、提示模板、主题、模型资源和 MCP 配置，保留会话 ID、文件、历史及工作目录。当前执行、所属子任务和工具尚未完成时，reload 会等待；后续普通请求按顺序继续。其他会话使用自己的资源。
+
+空白草稿首次执行 `/reload` 会按照输入区选定目录创建正式会话并加载资源，不发送模型请求。没有可用模型时，可以通过会话列表或命令面板的入口处理已有会话。
+
+资源加载、生命周期事件、技能或模板读取、主题解析、MCP 连接及认证失败会显示原因。修正对应资源或完成该 MCP 服务的实际认证后，再执行 reload。加载超过 60 秒或关闭超过 10 秒时，会话保持保护，待实际加载和清理结束后才能重试。输出面板 **Pi Harness** 保存具体错误。
+
+## 编辑历史与文件恢复
+
+在请求上按 Enter 或点击请求文字，修改并提交。确认后，Harness 停止受影响请求及其子任务，检查文件提交状态，恢复目标请求之前的分支和文件，然后提交修改后的请求。
+
+恢复范围包含通过 Harness 文件接口完成的 `edit`、`write`，以及使用该接口的所属子任务修改。`bash` 和直接写文件的第三方工具需要依靠其自身的恢复办法。目标文件有未保存文本或内容冲突时，操作会报告具体文件并保持保护。
+
+恢复过程使用持久记录。后台或窗口在恢复中结束后，重新打开会话会读取记录并继续检查。历史和文件恢复完成后，保留的输入等待用户明确发送；普通发送、reload、删除和终端交接受恢复状态约束。
+
+Fork Conversation 可以复制请求之前的历史，并提供文件恢复选择；`/fork` 复制整个会话。请求上的 Delete 键显示操作提示。
+
+## 存储与终端交接
+
+- Pi 历史继续保存在原会话目录中的 `.jsonl` 文件。
+- 恢复和写入归属记录保存在该会话目录的 `.pi-harness/<会话完整路径的 SHA-256>.sqlite`，SQLite 使用 WAL 和 FULL 同步。
+- 修改快照保存在 VS Code 扩展全局存储的 `local.pi-harness/snapshots`。清理命令保留历史、待恢复操作和文件提交记录引用的内容。
+- 同一会话只能由一个 Harness 窗口持有写入权限。继续外部创建的会话前，需要确认终端中的相同会话已经关闭。
+- 使用“在终端中继续此会话”时，扩展先关闭该会话的资源并释放权限，再打开可见终端。共享后台继续服务其他 Chat。
+
+## 兼容包与设置
+
+安装包包含 `pi-subagents`、`pi-cliproxyapi-provider`、Pi MCP、`pi-lens` 和 `pi-token-usage` 的兼容代码，以及 Koffi 的 Windows 原生文件。Harness 按用户原有资源配置映射到包内来源；终端使用的 Pi 安装目录保持原内容。兼容来源和构建说明见 `DEVELOPMENT_PLAN.md`。
+
+`pi-lens` 为每个会话分别管理编辑检查和语言服务。`pi-token-usage` 缓存已读取的会话文件，每次刷新检查文件变化，继续统计完整历史中的 token 和费用。
+
+- `piHarness.piPackagePath`：指定 Pi 包目录；留空时通过 `npm root -g` 查找。
+- `piHarness.sessionResidencyLimit`：空闲会话的保留目标数量。
+- Copilot 查询工具需要当前 VS Code 配置已登录且实际提供这些工具。
+
+VS Code 1.144.0 和 1.144.1 在关闭未发送消息的 Editor 草稿，或将草稿提交为正式会话时，没有通知扩展释放原草稿输入状态。这些草稿的目录监视保留至扩展停用；正式会话按自身身份管理资源。两个版本的实际检查和接口依据记录在 `ACCEPTANCE.md`。
+
+本次版本的实际验收结果、环境条件和证据路径见 `ACCEPTANCE.md`。

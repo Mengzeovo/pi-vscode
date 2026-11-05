@@ -18,6 +18,10 @@ export class SessionList implements vscode.Disposable {
 	private watchers: vscode.FileSystemWatcher[] = [];
 	private watchedDirs = new Set<string>();
 	private readonly subscriptions: vscode.Disposable[];
+	private readonly createdTimes = new Map<string, number>();
+	private refreshing: Promise<void> | undefined;
+	private refreshAgain = false;
+	private disposed = false;
 
 	constructor(
 		private readonly hub: PiHub,
@@ -30,6 +34,7 @@ export class SessionList implements vscode.Disposable {
 	}
 
 	scheduleRefresh(): void {
+		if (this.disposed) return;
 		if (this.timer) {
 			clearTimeout(this.timer);
 		}
@@ -41,41 +46,75 @@ export class SessionList implements vscode.Disposable {
 		}, REFRESH_DELAY_MS);
 	}
 
-	async refresh(): Promise<void> {
+	refresh(): Promise<void> {
+		if (this.disposed) return Promise.resolve();
+		if (this.refreshing) { this.refreshAgain = true; return this.refreshing; }
+		this.refreshing = this.refreshLoop().finally(() => { this.refreshing = undefined; });
+		return this.refreshing;
+	}
+
+	private async refreshLoop(): Promise<void> {
+		do { this.refreshAgain = false; await this.refreshItems(); } while (this.refreshAgain && !this.disposed);
+	}
+
+	private async refreshItems(): Promise<void> {
 		const records = await this.hub.listSessions();
-		const items: vscode.ChatSessionItem[] = records.map((record) => this.recordItem(record));
+		if (this.disposed) return;
 		const listed = new Set(records.map((record) => record.sessionId));
+		const retained = new Set<string>();
+		for (const record of records) {
+			const item = this.recordItem(record);
+			retained.add(item.resource.toString());
+		}
 		for (const pending of this.hub.pendingSessions()) {
-			const item = this.controller.createChatSessionItem(sessionResource(pending.sessionId), pending.label);
-			item.timing = { created: pending.created };
-			item.status = vscode.ChatSessionStatus.Completed;
-			items.push(item);
+			if (listed.has(pending.sessionId)) continue;
+			const item = this.getItem(pending.sessionId, pending.label);
+			this.createdTimes.set(pending.sessionId, pending.created);
+			if (item.timing?.created !== pending.created) item.timing = { created: pending.created };
+			if (item.status !== vscode.ChatSessionStatus.Completed) item.status = vscode.ChatSessionStatus.Completed;
+			retained.add(item.resource.toString());
 		}
 		for (const location of this.hub.unsavedLocations()) {
-			if (listed.has(location.sessionId)) {
+			if (listed.has(location.sessionId) || retained.has(sessionResource(location.sessionId).toString())) {
 				continue;
 			}
-			const item = this.controller.createChatSessionItem(sessionResource(location.sessionId), this.hub.title(location.sessionId) ?? NEW_SESSION_LABEL);
-			item.timing = { created: Date.now() };
-			item.status = this.hub.existingSession(location.sessionId)?.isBusy ? vscode.ChatSessionStatus.InProgress : vscode.ChatSessionStatus.Completed;
-			items.push(item);
+			const item = this.getItem(location.sessionId, this.hub.title(location.sessionId) ?? NEW_SESSION_LABEL);
+			const created = this.createdTimes.get(location.sessionId) ?? item.timing?.created ?? Date.now();
+			this.createdTimes.set(location.sessionId, created);
+			if (item.timing?.created !== created) item.timing = { created };
+			const status = this.hub.existingSession(location.sessionId)?.isBusy ? vscode.ChatSessionStatus.InProgress : vscode.ChatSessionStatus.Completed;
+			if (item.status !== status) item.status = status;
+			retained.add(item.resource.toString());
 		}
-		this.controller.items.replace(items);
+		for (const [resource] of this.controller.items) {
+			if (!retained.has(resource.toString())) this.controller.items.delete(resource);
+		}
 		await this.watchSessionDirs();
+	}
+
+	private getItem(sessionId: string, label: string): vscode.ChatSessionItem {
+		const resource = sessionResource(sessionId);
+		let item = this.controller.items.get(resource);
+		if (!item) { item = this.controller.createChatSessionItem(resource, label); this.controller.items.add(item); }
+		if (item.label !== label) item.label = label;
+		if (item.tooltip !== undefined) item.tooltip = undefined;
+		return item;
 	}
 
 	private recordItem(record: SessionRecord): vscode.ChatSessionItem {
 		const label = this.hub.title(record.sessionId) ?? record.name ?? (record.firstMessage.trim().length > 0 ? firstLine(record.firstMessage) : NEW_SESSION_LABEL);
-		const item = this.controller.createChatSessionItem(sessionResource(record.sessionId), label);
-		item.timing = { created: record.created.getTime(), lastRequestEnded: record.modified.getTime() };
-		item.archived = this.hub.isArchived(record.sessionId);
+		const item = this.getItem(record.sessionId, label);
+		const created = record.created.getTime();
+		const modified = record.modified.getTime();
+		if (item.timing?.created !== created || item.timing?.lastRequestEnded !== modified) item.timing = { created, lastRequestEnded: modified };
+		const archived = this.hub.isArchived(record.sessionId);
+		if (item.archived !== archived) item.archived = archived;
 		const session = this.hub.existingSession(record.sessionId);
-		item.status = session?.isBusy ? vscode.ChatSessionStatus.InProgress : vscode.ChatSessionStatus.Completed;
-		item.tooltip = record.sessionFile;
-		if (this.hub.folders().length > 1) {
-			item.badge = `$(folder) ${basename(record.cwd)}`;
-		}
-		item.metadata = { cwd: record.cwd, sessionFile: record.sessionFile };
+		const status = session?.isBusy ? vscode.ChatSessionStatus.InProgress : vscode.ChatSessionStatus.Completed;
+		if (item.status !== status) item.status = status;
+		const badge = this.hub.folders().length > 1 ? `$(folder) ${basename(record.cwd)}` : undefined;
+		if (item.badge !== badge) item.badge = badge;
+		if (item.metadata?.cwd !== record.cwd || item.metadata?.sessionFile !== record.sessionFile) item.metadata = { cwd: record.cwd, sessionFile: record.sessionFile };
 		return item;
 	}
 
@@ -86,6 +125,7 @@ export class SessionList implements vscode.Disposable {
 		for (const folder of this.hub.folders()) {
 			dirs.add(await catalog.sessionDirFor(folder));
 		}
+		if (this.disposed) return;
 		if (dirs.size === this.watchedDirs.size && [...dirs].every((dir) => this.watchedDirs.has(dir))) {
 			return;
 		}
@@ -103,6 +143,7 @@ export class SessionList implements vscode.Disposable {
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		if (this.timer) {
 			clearTimeout(this.timer);
 		}

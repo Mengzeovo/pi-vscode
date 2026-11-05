@@ -10,6 +10,8 @@ import type { PiHub } from "./session/hub";
 import type { PiSession, SessionLocation } from "./session/piSession";
 import type { SessionList } from "./sessions/sessionList";
 import { parseSessionResource } from "./sessions/sessionUri";
+import { OperationStore } from "./backend/operationStore";
+import { isUntitledResource } from "./sessions/sessionUri";
 
 export const SNAPSHOT_SCHEME = "pi-harness-snapshot";
 const EMPTY_SNAPSHOT = "empty";
@@ -115,8 +117,7 @@ async function deleteSession(hub: PiHub, item: vscode.ChatSessionItem | undefine
 		return;
 	}
 	const session = await hub.session(location);
-	await session.editFile(async () => {
-		await session.shutdown();
+	await session.deleteFile(async () => {
 		await vscode.workspace.fs.delete(vscode.Uri.file(location.sessionFile), { useTrash: true });
 	});
 	hub.forget(sessionId);
@@ -126,7 +127,8 @@ async function deleteSession(hub: PiHub, item: vscode.ChatSessionItem | undefine
 async function continueInTerminal(hub: PiHub, item: vscode.ChatSessionItem | undefined): Promise<void> {
 	const sessionId = itemSessionId(item);
 	const location = await savedLocation(hub, sessionId);
-	const session: PiSession | undefined = hub.existingSession(sessionId);
+	const session: PiSession = await hub.session(location);
+	await session.requireRecoveryCompleted();
 	if (session?.isBusy) {
 		throw new Error("Pi 正在运行本轮任务，请在本轮结束后再交给终端");
 	}
@@ -145,12 +147,50 @@ async function continueInTerminal(hub: PiHub, item: vscode.ChatSessionItem | und
 	terminal.show();
 }
 
+async function reloadSession(hub: PiHub, item?: vscode.ChatSessionItem): Promise<void> {
+	let resource = item?.resource ?? vscode.window.activeChatPanelSessionResource;
+	if (!resource || resource.scheme !== "pi-harness" || isUntitledResource(resource)) {
+		const records = await hub.listSessions();
+		const selected = await vscode.window.showQuickPick(records.map((record) => ({
+			label: hub.title(record.sessionId) ?? record.name ?? record.firstMessage ?? record.sessionId,
+			description: record.cwd, sessionId: record.sessionId,
+		})), { title: "选择需要重新加载的 Pi 会话" });
+		if (!selected) return;
+		resource = vscode.Uri.from({ scheme: "pi-harness", path: `/${selected.sessionId}` });
+	}
+	if (!vscode.workspace.isTrusted) throw new Error("工作区未受信任，无法重新加载 Pi 会话");
+	const sessionId = parseSessionResource(resource);
+	let location = await hub.locate(sessionId);
+	if (!location) {
+		const pending = hub.pendingSession(sessionId);
+		if (!pending?.cwd) throw new Error("没有找到 Pi 会话的工作目录");
+		location = await hub.allocate(pending.cwd, sessionId);
+	}
+	if (!hub.isWorkspaceFolder(location.cwd)) throw new Error("Pi 会话属于其他工作目录");
+	await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "重新加载 Pi 会话" }, async (progress) => {
+		const session = await hub.session(location);
+		progress.report({ message: session.isBusy ? "等待当前执行结束" : "正在读取会话资源" });
+		await session.reload();
+	});
+	hub.notifyChanged(sessionId);
+}
+
+async function restoreInput(hub: PiHub, sessionId: string, operationId: string): Promise<void> {
+	const location = await savedLocation(hub, sessionId);
+	const session = await hub.session(location);
+	const operation = await session.prepareRecoveryInput(operationId);
+	await vscode.commands.executeCommand("vscode.open", vscode.Uri.from({ scheme: "pi-harness", path: `/${sessionId}` }));
+	await vscode.commands.executeCommand("workbench.action.chat.openInSidebar");
+	await vscode.commands.executeCommand("workbench.action.chat.open", { query: operation.input.userText ?? operation.input.message, isPartialQuery: true });
+}
+
 /** 删除不再被任何会话文件中的修改记录引用的快照内容 */
 async function cleanSnapshots(hub: PiHub): Promise<void> {
 	const runtime = await hub.runtime();
 	const referenced = new Set<string>();
 	const missing: string[] = [];
 	for (const file of hub.snapshotSessionFiles()) {
+		for (const hash of OperationStore.referencedHashesFor(file)) referenced.add(hash);
 		if (!existsSync(file)) {
 			missing.push(file);
 			continue;
@@ -166,6 +206,7 @@ async function cleanSnapshots(hub: PiHub): Promise<void> {
 		}
 	}
 	for (const session of hub.allSessions()) {
+		if (session.location.sessionFile) for (const hash of OperationStore.referencedHashesFor(session.location.sessionFile)) referenced.add(hash);
 		for (const hash of session.fileGate.referencedHashes()) {
 			referenced.add(hash);
 		}
@@ -221,6 +262,8 @@ function guard<T extends unknown[]>(hub: PiHub, action: string, run: (...args: T
 
 export function registerCommands(hub: PiHub, list: SessionList): vscode.Disposable[] {
 	return [
+		vscode.commands.registerCommand("piHarness.restoreInput", guard(hub, "恢复待发送输入", (sessionId: string, operationId: string) => restoreInput(hub, sessionId, operationId))),
+		vscode.commands.registerCommand("piHarness.reloadSession", guard(hub, "重新加载 Pi 会话", (item?: vscode.ChatSessionItem) => reloadSession(hub, item))),
 		vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotContentProvider(hub)),
 		vscode.commands.registerCommand(OPEN_DIFF_COMMAND, guard(hub, "打开差异", (sessionId: string, toolCallId: string) => openDiff(hub, sessionId, toolCallId))),
 		vscode.commands.registerCommand(

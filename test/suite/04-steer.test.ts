@@ -1,9 +1,11 @@
 import * as assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import { REQUEST_ENTRY_TYPE, type RequestEntryData } from "../../shared/protocol";
 import {
 	customData,
+	env,
 	fillInput,
 	harness,
 	lastAssistantText,
@@ -110,8 +112,22 @@ describe("引导消息和停止", () => {
 		});
 		await sleep(3000);
 		const started = Date.now();
-		await vscode.commands.executeCommand("workbench.action.chat.cancel");
-		const sessionFile = await waitForIdle(api, sessionId, 30_000);
+		const backend = await api.hub.backend();
+		const observations: unknown[] = [];
+		const capture = (event: string): void => {
+			const snapshot = backend.snapshot?.sessions.find((item) => item.sessionId === sessionId);
+			observations.push({ event, elapsedMs: Date.now() - started, at: new Date().toISOString(), sequence: snapshot?.sequence, state: snapshot?.state, busy: snapshot?.busy, sessionBusy: api.hub.existingSession(sessionId)?.isBusy, childTasks: snapshot?.childTasks, pendingInteractions: snapshot?.pendingInteractions, pendingCommits: snapshot?.pendingCommits, messageCount: snapshot?.messages.length });
+			writeFileSync(join(env("PI_HARNESS_TEST_WORK"), "stop-observations.json"), JSON.stringify(observations, null, 2));
+		};
+		const unsubscribe = backend.onChanged(() => capture("backend-changed"));
+		let sessionFile: string;
+		try {
+			capture("cancel-issued");
+			await vscode.commands.executeCommand("workbench.action.chat.cancel");
+			capture("cancel-returned");
+			sessionFile = await waitForIdle(api, sessionId, 30_000);
+			capture("session-idle");
+		} finally { unsubscribe(); }
 		const elapsed = Date.now() - started;
 		console.log(`[测试] 停止用时 ${elapsed} ms`);
 		assert.ok(elapsed < 20_000, `停止应在 20 秒内完成，实际 ${elapsed} ms`);

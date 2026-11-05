@@ -11,7 +11,7 @@ import { parseJson } from "../util/json";
 const execFileAsync = promisify(execFile);
 
 export const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
-export const SUPPORTED_PI_RANGE = "^1.5.0";
+export const SUPPORTED_PI_RANGE = "1.5.0";
 
 export interface PiModules {
 	readonly SessionManager: typeof Pi.SessionManager;
@@ -52,6 +52,9 @@ async function resolveNode(engineRange: string): Promise<{ execPath: string; ver
 	const info = parseJson<{ execPath: string; version: string }>(stdout, "node -p");
 	if (!semver.satisfies(info.version, engineRange)) {
 		throw new Error(`PATH 中的 node ${info.version}（${info.execPath}）不满足 Pi 要求的 ${engineRange}`);
+	}
+	if (!semver.satisfies(info.version, ">=24.15.0")) {
+		throw new Error(`Pi Harness 后台需要 Node.js 24.15.0 或更新版本，当前为 ${info.version}（${info.execPath}）`);
 	}
 	return info;
 }

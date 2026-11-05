@@ -4,7 +4,10 @@ import * as vscode from "vscode";
 import { SnapshotStore } from "../edits/snapshotStore";
 import { type CatalogSnapshot, ModelCatalog, modelKey, type PiModel, type ThinkingLevel } from "../pi/catalog";
 import { loadPiRuntime, type PiRuntime } from "../pi/piRuntime";
+import { SharedBackendClient } from "../pi/sharedBackend";
+import type { BackendSkill } from "../backend/protocol";
 import { SessionCatalog, type SessionRecord } from "../sessions/sessionCatalog";
+import { isUntitledResource, parseSessionResource } from "../sessions/sessionUri";
 import { PiSession, type SessionLocation } from "./piSession";
 
 const ARCHIVED_KEY = "piHarness.archivedSessions";
@@ -33,22 +36,38 @@ export interface PendingSession {
 	readonly sessionId: string;
 	readonly label: string;
 	readonly created: number;
+	readonly cwd?: string;
 }
 
 /** 扩展的全局状态：Pi 运行环境、会话位置、运行中的会话和每个工作区文件夹的模型列表进程 */
 export class PiHub implements vscode.Disposable {
 	private runtimePromise: Promise<PiRuntime> | undefined;
+	private backendPromise: Promise<SharedBackendClient> | undefined;
+	private loadedBackend: SharedBackendClient | undefined;
+	private closing = false;
+	private readonly backendChanged = new vscode.EventEmitter<void>();
+	readonly onDidChangeBackend = this.backendChanged.event;
+	private readonly backendSubscriptions: Array<() => void> = [];
 	private catalog: SessionCatalog | undefined;
 	private readonly sessions = new Map<string, PiSession>();
+	private readonly creatingSessions = new Map<string, Promise<PiSession>>();
 	private readonly locations = new Map<string, SessionLocation>();
 	private readonly pending = new Map<string, PendingSession>();
 	private readonly modelCatalogs = new Map<string, ModelCatalog>();
 	private choicesPromise: Promise<ModelChoices> | undefined;
+	private stateUpdates: Promise<void> = Promise.resolve();
 	private readonly titles = new Map<string, string>();
 	private readonly shownEntries = new Map<string, Set<string>>();
 	private readonly createdHere = new Set<string>();
 	/** 本窗口新建的会话 ID，按创建顺序排列 */
 	private readonly newSessionIds: string[] = [];
+	private readonly inputStates = new Map<string, Set<vscode.ChatSessionInputState>>();
+	private readonly stateResources = new Map<vscode.ChatSessionInputState, string>();
+	private readonly inputSubscriptions = new Map<vscode.ChatSessionInputState, vscode.Disposable[]>();
+	private readonly inputsChanged = new vscode.EventEmitter<void>();
+	readonly onDidChangeInputs = this.inputsChanged.event;
+	private readonly inputResourceDisposed = new vscode.EventEmitter<vscode.Uri>();
+	readonly onDidDisposeInputResource = this.inputResourceDisposed.event;
 	readonly snapshots: SnapshotStore;
 	private readonly changed = new vscode.EventEmitter<string | undefined>();
 	/** 会话列表或某个会话的标题、状态变化；参数为会话 ID，undefined 表示整个列表 */
@@ -65,6 +84,10 @@ export class PiHub implements vscode.Disposable {
 	}
 
 	log(line: string): void {
+		if (this.closing) {
+			console.log(`[Pi Harness] ${line}`);
+			return;
+		}
 		this.output.appendLine(line);
 	}
 
@@ -96,6 +119,56 @@ export class PiHub implements vscode.Disposable {
 			this.catalog = new SessionCatalog(await this.runtime());
 		}
 		return this.catalog;
+	}
+
+	backend(): Promise<SharedBackendClient> {
+		if (this.closing) return Promise.reject(new Error("Pi 窗口正在关闭"));
+		this.backendPromise ??= this.runtime().then((runtime) => {
+			if (this.closing) throw new Error("Pi 窗口已经停止创建后台");
+			const backend = new SharedBackendClient({
+				runtime, extensionPath: this.context.extensionPath, log: (message) => this.log(message),
+				residencyLimit: () => vscode.workspace.getConfiguration("piHarness").get<number>("sessionResidencyLimit", 10),
+			});
+			this.loadedBackend = backend;
+			this.backendSubscriptions.push(backend.onChanged(() => this.backendChanged.fire()));
+			this.backendSubscriptions.push(backend.onCatalogChanged((cwd) => {
+				this.modelCatalogs.get(folderKey(cwd))?.invalidate();
+				this.choicesPromise = undefined;
+				this.choicesChanged.fire();
+				this.inputsChanged.fire();
+			}));
+			return backend;
+		}).catch((error: unknown) => { this.backendPromise = undefined; throw error; });
+		return this.backendPromise;
+	}
+
+	get backendStatus(): SharedBackendClient | undefined { return this.loadedBackend; }
+
+	async skillsForResource(resource: vscode.Uri): Promise<readonly BackendSkill[]> {
+		if (!vscode.workspace.isTrusted) return [];
+		const sessionId = isUntitledResource(resource) ? undefined : parseSessionResource(resource);
+		const cwd = await this.cwdForResource(resource);
+		if (cwd === undefined) throw new Error("Pi 技能菜单需要一个工作目录");
+		if (!this.isWorkspaceFolder(cwd)) throw new Error("Pi 技能目录必须属于当前工作区");
+		return (await (await this.backend()).catalog(cwd, true, false, this.sessions.get(sessionId ?? "")?.isRunning ? sessionId : undefined)).skills;
+	}
+
+	async cwdForResource(resource: vscode.Uri): Promise<string | undefined> {
+		const sessionId = isUntitledResource(resource) ? undefined : parseSessionResource(resource);
+		const location = sessionId === undefined ? undefined : await this.locate(sessionId);
+		return location?.cwd ?? (sessionId === undefined ? undefined : this.pending.get(sessionId)?.cwd) ?? this.draftFolder(resource);
+	}
+
+	async resourceFilesChanged(resource: vscode.Uri): Promise<void> {
+		const cwd = await this.cwdForResource(resource);
+		if (cwd === undefined || !vscode.workspace.isTrusted) return;
+		const sessionId = isUntitledResource(resource) ? undefined : parseSessionResource(resource);
+		if (!sessionId || !this.sessions.get(sessionId)?.isRunning) {
+			await this.modelCatalog(cwd).refresh();
+			this.choicesPromise = undefined;
+			this.choicesChanged.fire();
+		}
+		this.inputsChanged.fire();
 	}
 
 	/** 已打开的本地工作区文件夹 */
@@ -148,6 +221,75 @@ export class PiHub implements vscode.Disposable {
 		return [...this.pending.values()];
 	}
 
+	trackInputState(resource: vscode.Uri, state: vscode.ChatSessionInputState): void {
+		const key = resource.toString();
+		const previous = this.stateResources.get(state);
+		if (previous === key) {
+			return;
+		}
+		if (previous !== undefined) {
+			this.removeInputState(previous, state);
+		}
+		this.stateResources.set(state, key);
+		const states = this.inputStates.get(key) ?? new Set<vscode.ChatSessionInputState>();
+		states.add(state);
+		this.inputStates.set(key, states);
+		if (!this.inputSubscriptions.has(state)) {
+			this.inputSubscriptions.set(state, [
+				state.onDidChange(() => this.inputsChanged.fire()),
+				state.onDidDispose(() => {
+					const current = this.stateResources.get(state);
+					if (current !== undefined) {
+						this.removeInputState(current, state);
+					}
+					this.stateResources.delete(state);
+					for (const subscription of this.inputSubscriptions.get(state) ?? []) {
+						subscription.dispose();
+					}
+					this.inputSubscriptions.delete(state);
+					this.inputsChanged.fire();
+				}),
+			]);
+		}
+		if (!isUntitledResource(resource)) {
+			this.sessions.get(parseSessionResource(resource))?.markContentReleased(false);
+		}
+		this.inputsChanged.fire();
+	}
+
+	private removeInputState(resource: string, state: vscode.ChatSessionInputState): void {
+		const states = this.inputStates.get(resource);
+		states?.delete(state);
+		if (states?.size === 0) {
+			this.inputStates.delete(resource);
+			setImmediate(() => { if (!this.inputStates.has(resource)) this.inputResourceDisposed.fire(vscode.Uri.parse(resource)); });
+			const uri = vscode.Uri.parse(resource);
+			if (!isUntitledResource(uri)) {
+				this.sessions.get(parseSessionResource(uri))?.markContentReleased(true);
+			}
+		}
+	}
+
+	isInputResourceActive(resource: vscode.Uri): boolean { return this.inputStates.has(resource.toString()); }
+
+	draftFolder(resource: vscode.Uri): string | undefined {
+		const states = this.inputStates.get(resource.toString());
+		const current = states === undefined ? undefined : [...states].at(-1);
+		const selected = current?.groups.find((group) => group.id === "folder")?.selected?.id;
+		return selected ?? (this.folders().length === 1 ? this.folders()[0] : undefined);
+	}
+
+	inputSubscriptionCount(sessionId: string): number {
+		let count = 0;
+		for (const [key, states] of this.inputStates) {
+			const resource = vscode.Uri.parse(key);
+			if (!isUntitledResource(resource) && parseSessionResource(resource) === sessionId) {
+				count += states.size;
+			}
+		}
+		return count;
+	}
+
 	async locate(sessionId: string): Promise<SessionLocation | undefined> {
 		const known = this.locations.get(sessionId);
 		if (known) {
@@ -189,16 +331,28 @@ export class PiHub implements vscode.Disposable {
 		return this.sessions.get(sessionId);
 	}
 
-	async session(location: SessionLocation): Promise<PiSession> {
+	session(location: SessionLocation): Promise<PiSession> {
 		const existing = this.sessions.get(location.sessionId);
 		if (existing) {
-			return existing;
+			return Promise.resolve(existing);
 		}
+		let pending = this.creatingSessions.get(location.sessionId);
+		if (!pending) {
+			pending = this.createSession(location);
+			this.creatingSessions.set(location.sessionId, pending);
+			void pending.then(() => this.creatingSessions.delete(location.sessionId), () => this.creatingSessions.delete(location.sessionId));
+		}
+		return pending;
+	}
+
+	private async createSession(location: SessionLocation): Promise<PiSession> {
 		const runtime = await this.runtime();
+		const backend = await this.backend();
 		const session = new PiSession(
 			location,
 			{
 				runtime,
+				backend,
 				piExtensionPath: this.piExtensionPath,
 				snapshots: this.snapshots,
 				log: (line) => this.log(line),
@@ -211,7 +365,7 @@ export class PiHub implements vscode.Disposable {
 					void this.rememberSnapshotSession(updated.sessionFile);
 					this.changed.fire(updated.sessionId);
 				},
-				idleShutdownMs: () => vscode.workspace.getConfiguration("piHarness").get<number>("idleShutdownMinutes", 10) * 60_000,
+				hasSubscriptions: () => this.inputSubscriptionCount(location.sessionId) > 0,
 			},
 			this.createdHere.has(location.sessionId),
 		);
@@ -244,20 +398,11 @@ export class PiHub implements vscode.Disposable {
 		const key = folderKey(cwd);
 		let catalog = this.modelCatalogs.get(key);
 		if (!catalog) {
-			const created = new ModelCatalog(this.runtimeSync(), cwd, (line) => this.log(line));
+			const created = new ModelCatalog(() => this.backend(), cwd, () => vscode.workspace.isTrusted);
 			this.modelCatalogs.set(key, created);
 			catalog = created;
 		}
 		return catalog;
-	}
-
-	private loadedRuntime: PiRuntime | undefined;
-
-	private runtimeSync(): PiRuntime {
-		if (!this.loadedRuntime) {
-			throw new Error("Pi 运行环境尚未加载");
-		}
-		return this.loadedRuntime;
 	}
 
 	/** 全部工作区文件夹的模型合集；工作区未受信任或没有文件夹时报告原因。读取失败的结果不保留，下次使用时重新读取 */
@@ -282,7 +427,7 @@ export class PiHub implements vscode.Disposable {
 		if (folders.length === 0) {
 			throw new Error("没有打开的本地文件夹");
 		}
-		this.loadedRuntime = await this.runtime();
+		await this.runtime();
 		const snapshots: Array<[string, CatalogSnapshot]> = [];
 		for (const folder of folders) {
 			snapshots.push([folder, await this.modelCatalog(folder).snapshot()]);
@@ -306,7 +451,7 @@ export class PiHub implements vscode.Disposable {
 		return { models, levels, defaults };
 	}
 
-	/** 重新读取模型列表：结束模型列表进程，关闭已移除文件夹的进程，然后通知输入区更新 */
+	/** 重新读取工作区模型资源，并通知输入区更新。 */
 	async refreshChoices(): Promise<void> {
 		this.choicesPromise = undefined;
 		const keep = new Set(this.folders().map(folderKey));
@@ -323,14 +468,23 @@ export class PiHub implements vscode.Disposable {
 		return this.context.globalState.get<string[]>(ARCHIVED_KEY, []).includes(sessionId);
 	}
 
+	private updateState(work: () => PromiseLike<void>): Promise<void> {
+		const operation = this.stateUpdates.then(work);
+		this.stateUpdates = operation.then(() => undefined, () => undefined);
+		return operation;
+	}
+
 	async setArchived(sessionId: string, archived: boolean): Promise<void> {
-		const current = new Set(this.context.globalState.get<string[]>(ARCHIVED_KEY, []));
-		if (archived) {
-			current.add(sessionId);
-		} else {
-			current.delete(sessionId);
-		}
-		await this.context.globalState.update(ARCHIVED_KEY, [...current]);
+		if (this.isArchived(sessionId) === archived) return;
+		const location = await this.locate(sessionId);
+		if (!location) throw new Error(`没有找到 Pi 会话 ${sessionId}`);
+		await (await this.session(location)).setArchived(archived);
+		await this.updateState(() => {
+			const current = new Set(this.context.globalState.get<string[]>(ARCHIVED_KEY, []));
+			if (archived) current.add(sessionId);
+			else current.delete(sessionId);
+			return this.context.globalState.update(ARCHIVED_KEY, [...current]);
+		});
 	}
 
 	parentOf(sessionId: string): string | undefined {
@@ -338,9 +492,11 @@ export class PiHub implements vscode.Disposable {
 	}
 
 	async setParent(sessionId: string, parentSessionFile: string): Promise<void> {
-		const parents = { ...this.context.globalState.get<Record<string, string>>(PARENT_KEY, {}) };
-		parents[sessionId] = parentSessionFile;
-		await this.context.globalState.update(PARENT_KEY, parents);
+		await this.updateState(() => {
+			const parents = { ...this.context.globalState.get<Record<string, string>>(PARENT_KEY, {}) };
+			parents[sessionId] = parentSessionFile;
+			return this.context.globalState.update(PARENT_KEY, parents);
+		});
 	}
 
 	/** 记录写入过快照的会话文件，清理快照时扫描这些文件 */
@@ -348,11 +504,13 @@ export class PiHub implements vscode.Disposable {
 		if (sessionFile === undefined) {
 			return;
 		}
-		const files = new Set(this.context.globalState.get<string[]>(TOUCHED_KEY, []));
-		if (!files.has(sessionFile)) {
-			files.add(sessionFile);
-			await this.context.globalState.update(TOUCHED_KEY, [...files]);
-		}
+		await this.updateState(async () => {
+			const files = new Set(this.context.globalState.get<string[]>(TOUCHED_KEY, []));
+			if (!files.has(sessionFile)) {
+				files.add(sessionFile);
+				await this.context.globalState.update(TOUCHED_KEY, [...files]);
+			}
+		});
 	}
 
 	snapshotSessionFiles(): string[] {
@@ -361,10 +519,9 @@ export class PiHub implements vscode.Disposable {
 
 	async forgetSnapshotSessions(files: readonly string[]): Promise<void> {
 		const remove = new Set(files);
-		await this.context.globalState.update(
-			TOUCHED_KEY,
-			this.snapshotSessionFiles().filter((file) => !remove.has(file)),
-		);
+		await this.updateState(() => this.context.globalState.update(
+			TOUCHED_KEY, this.snapshotSessionFiles().filter((file) => !remove.has(file)),
+		));
 	}
 
 	forget(sessionId: string): void {
@@ -384,16 +541,30 @@ export class PiHub implements vscode.Disposable {
 	}
 
 	async deactivate(): Promise<void> {
-		await Promise.all([...this.sessions.values()].map((session) => session.deactivate()));
-		await Promise.all([...this.modelCatalogs.values()].map((catalog) => catalog.dispose()));
+		this.closing = true;
+		const deadline = Date.now() + 4_000;
+		await this.loadedBackend?.shutdown(deadline);
 		this.modelCatalogs.clear();
 	}
 
 	dispose(): void {
+		this.closing = true;
 		for (const session of this.sessions.values()) {
 			session.dispose();
 		}
 		this.changed.dispose();
 		this.choicesChanged.dispose();
+		this.backendChanged.dispose();
+		for (const unsubscribe of this.backendSubscriptions) unsubscribe();
+		this.inputsChanged.dispose();
+		this.inputResourceDisposed.dispose();
+		for (const subscriptions of this.inputSubscriptions.values()) {
+			for (const subscription of subscriptions) {
+				subscription.dispose();
+			}
+		}
+		this.inputSubscriptions.clear();
+		this.inputStates.clear();
+		this.stateResources.clear();
 	}
 }

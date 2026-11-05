@@ -1,20 +1,19 @@
 # Pi Harness
 
-在 VS Code 侧边栏的 Chat 中使用 Pi 编码代理。Pi 以 RPC 模式运行，沿用你在终端中配置的登录信息、模型、扩展和会话文件。
+在 VS Code Chat 中使用 Pi。每个窗口共用一个 Pi 后台，每个会话分别管理目录、模型、工具、历史和扩展资源。
 
-安装和授权步骤见扩展目录中的 `INSTALL.md`。
+安装与操作见 [INSTALL.md](INSTALL.md)，当前验证记录见 [ACCEPTANCE.md](ACCEPTANCE.md)，开发说明见 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)。
 
 ## 功能
 
-- 在新建聊天中选择 Pi，会话列表显示当前工作区的 Pi 会话（包括终端中创建的会话）。
-- Pi 的模型和思考级别出现在 Chat 的模型选择器中。
-- 附加文件、选区、符号、诊断和图片；Pi 运行时可以发送引导消息或停止。
-- Pi 的文件修改进入 Chat 的变更记录，可以打开每次修改的差异；Pi 不会覆盖你在编辑器中修改且尚未保存的文件。
-- 编辑请求、Fork Conversation（可同时恢复文件）、`/fork` 和引用回复中的文字。
-- Pi 扩展的选择、确认、输入和编辑对话框在 Chat 或 VS Code 的输入框中回答。
-- 编辑器工具 `vscode_definition`、`vscode_references`、`vscode_diagnostics`，以及 VS Code 中存在时的 Copilot 查询工具。
+- Pi 会话列表、模型和思考级别选择、文件及图片附件。
+- 默认排队、显式引导、停止及独立会话释放。
+- Pi 技能菜单和单会话 `/reload`。
+- 历史编辑、持久文件恢复、Fork Conversation 和引用回复。
+- 文件修改差异、未保存文本保护、编辑器查询和实际可用的 Copilot 工具。
+- 唯一 Pi 状态按钮，显示会话状态及真实进程资源占用。
 
-## 构建
+## 构建与验证
 
 ```powershell
 npm install
@@ -23,21 +22,21 @@ npm run build
 npm run package
 ```
 
-测试使用本机 VS Code 的副本和 Pi 中配置的真实模型。第一次运行前把已安装的 VS Code 复制到 `.test-work/vscode`：
+使用 Node.js 24.15.0 或更高版本，Pi 固定为 1.5.0。构建将后台、进程管理辅助程序、兼容代码和生产依赖复制进 `dist`。
+
+测试使用本机 VS Code 副本、真实 Pi SDK、模型、进程和工具。第一次使用时准备独立副本：
 
 ```powershell
 npm run build
 node dist/test/setupVscode.js "E:\Microsoft VS Code\Code.exe"
 ```
 
-副本的 `product.json` 中没有 `target`，每次测试都以便携模式启动它，`argv.json`、用户数据和扩展都在该次运行的目录中，测试不读写本机 VS Code 的配置，也不改变 `vscode://` 链接的处理程序。环境变量 `PI_HARNESS_VSCODE` 可以指定其他副本的 `Code.exe`。
-
 ```powershell
-npm test                  # 扩展宿主中的功能测试
-npm run test:ui           # 界面操作测试
-npm run test:reopen       # 重新启动 VS Code 后继续会话
-npm run test:no-proposed  # 没有实验接口授权时的行为
-npm run test:acceptance   # 打包后在便携配置中安装 VSIX 并验收
+npm test
+npm run test:ui
+npm run test:reopen
+npm run test:no-proposed
+npm run test:acceptance
 ```
 
-界面操作测试中的引用使用系统剪贴板，Windows 锁屏期间剪贴板无法读写，需要在解锁的桌面会话中运行。验收结果见源码目录中的 `ACCEPTANCE.md`。
+`PI_HARNESS_VSCODE` 可以指定另一份测试用 `Code.exe`。所有测试的用户配置、会话及结果保存在 `.test-work`。安装验收使用独立的扩展目录，并检查日常安装内容保持一致。界面检查通过 DOM 和实际事件完成；引用功能需要可读写剪贴板的桌面会话。

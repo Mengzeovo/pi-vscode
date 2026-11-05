@@ -38,8 +38,11 @@ describe("进程生命周期", () => {
 			false,
 		);
 		await waitForBusy(api, sessionId);
-		await sleep(5000);
 		const session = api.hub.existingSession(sessionId);
+		await waitFor("中断前保存请求对应关系", async () => {
+			if (!session?.location.sessionFile) return false;
+			return customData<RequestEntryData>(await readEntries(api, session.location.sessionFile), REQUEST_ENTRY_TYPE).length === 1;
+		});
 		const pid = session?.processId;
 		assert.ok(pid !== undefined);
 		process.kill(pid);
@@ -54,11 +57,10 @@ describe("进程生命周期", () => {
 		assert.notEqual(api.hub.existingSession(sessionId)?.processId, pid);
 		const users = userMessages(branch);
 		assert.equal(users.length, 2, "中断的一轮的用户消息保留在会话中");
-		// 请求记录在本轮结束时写入，中断的一轮没有记录
 		const records = customData<RequestEntryData>(await readEntries(api, sessionFile), REQUEST_ENTRY_TYPE);
 		assert.deepEqual(
 			records.map((record) => record.userEntryId),
-			[users[1].id],
+			users.map((user) => user.id),
 		);
 	});
 
@@ -67,6 +69,8 @@ describe("进程生命周期", () => {
 		const first = await startSession(api, "Use the bash tool to run exactly: node -e \"setTimeout(() => console.log('one'), 8000)\" and then reply with exactly: ALPHA-ONE", false);
 		await waitForBusy(api, first);
 		const second = await startSession(api, "Reply with exactly: BRAVO-TWO. Do not use any tools.", false);
+		await waitForBusy(api, second);
+		assert.equal(api.hub.existingSession(first)?.processId, api.hub.existingSession(second)?.processId, "两个 Chat 共用同一后台");
 		const [firstFile, secondFile] = await Promise.all([waitForIdle(api, first), waitForIdle(api, second)]);
 		assert.match(lastAssistantText(await readBranch(api, firstFile)), /ALPHA-ONE/);
 		assert.match(lastAssistantText(await readBranch(api, secondFile)), /BRAVO-TWO/);
@@ -96,32 +100,30 @@ describe("进程生命周期", () => {
 		}
 	});
 
-	it("Pi 空闲超过设定时间后结束进程，下一次发送时重新启动", async () => {
+	it("单会话释放后共享后台继续运行，再次发送恢复同一会话", async () => {
 		const api = await harness();
-		const config = vscode.workspace.getConfiguration("piHarness");
-		await config.update("idleShutdownMinutes", 1, vscode.ConfigurationTarget.Global);
-		try {
 			const sessionId = await startSession(api, "Reply with exactly: IDLE-ONE. Do not use any tools.");
 			await waitForIdle(api, sessionId);
 			const session = api.hub.existingSession(sessionId);
 			assert.ok(session?.isRunning);
-			await waitFor("空闲超时后 Pi 进程退出", () => !session.isRunning, 120_000, 1000);
+			const pid = session.processId;
+			await session.shutdown();
+			assert.equal(session.isRunning, false);
 			assert.equal(session.holdsWritePermission, false);
+			assert.equal(api.hub.backendStatus?.pid, pid);
 			await sendInSidebar("Reply with exactly: IDLE-TWO. Do not use any tools.");
 			const sessionFile = await waitForIdle(api, sessionId);
 			assert.match(lastAssistantText(await readBranch(api, sessionFile)), /IDLE-TWO/);
-		} finally {
-			await config.update("idleShutdownMinutes", undefined, vscode.ConfigurationTarget.Global);
-		}
+			assert.equal(session.processId, pid);
 	});
 
-	it("从历史打开的会话被 VS Code 释放且 Pi 空闲时结束进程", async () => {
+	it("历史会话的内容释放后保持可恢复状态，明确释放保留共享后台", async () => {
 		const api = await harness();
 		const workspace = env("PI_HARNESS_TEST_WORKSPACE_A");
 		const sessionsDir = env("PI_HARNESS_TEST_SESSIONS");
 		const before = new Set(readdirSync(sessionsDir));
 		await runPiCli(api, workspace, ["-p", "Reply with exactly: HISTORY-ONE"]);
-		const created = readdirSync(sessionsDir).filter((name) => !before.has(name));
+		const created = readdirSync(sessionsDir).filter((name) => name.endsWith(".jsonl") && !before.has(name));
 		assert.equal(created.length, 1);
 		await vscode.commands.executeCommand("piHarness.refreshSessions");
 		const [header] = await readEntries(api, join(sessionsDir, created[0]));
@@ -136,7 +138,10 @@ describe("进程生命周期", () => {
 		assert.ok(session?.isRunning);
 		await vscode.commands.executeCommand("workbench.action.closeAllEditors");
 		await vscode.commands.executeCommand("workbench.action.chat.openNewSessionSidebar.pi-harness");
-		await waitFor("会话内容释放后 Pi 进程退出", () => !session.isRunning, 60_000, 500);
+		const pid = api.hub.backendStatus?.pid;
+		await session.shutdown();
+		assert.equal(session.isRunning, false);
 		assert.equal(session.holdsWritePermission, false);
+		assert.equal(api.hub.backendStatus?.pid, pid);
 	});
 });

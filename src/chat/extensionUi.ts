@@ -1,5 +1,6 @@
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import * as vscode from "vscode";
+import { stripVTControlCharacters } from "node:util";
 
 type DialogRequest = Extract<RpcExtensionUIRequest, { method: "select" | "confirm" | "input" | "editor" }>;
 
@@ -9,6 +10,7 @@ export interface ExtensionUiHost {
 	readonly respond: (response: RpcExtensionUIResponse) => Promise<void>;
 	readonly setTitle: (title: string) => void;
 	readonly sessionLabel: () => string;
+	readonly logDiagnostic?: (message: string) => void;
 }
 
 const YES = "是";
@@ -33,14 +35,9 @@ async function closeWithoutSaving(document: vscode.TextDocument): Promise<void> 
 
 /** 把 Pi 扩展的界面请求转换为 VS Code 的聊天内提问、QuickPick、InputBox、通知和状态栏 */
 export class ExtensionUiBridge implements vscode.Disposable {
-	private readonly statusItem: vscode.StatusBarItem;
-	private readonly statuses = new Map<string, string>();
-	private readonly widgets = new Map<string, readonly string[]>();
 	private readonly pending = new Map<string, vscode.CancellationTokenSource>();
 
-	constructor(private readonly host: ExtensionUiHost) {
-		this.statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-	}
+	constructor(private readonly host: ExtensionUiHost) {}
 
 	handle(request: RpcExtensionUIRequest): void {
 		switch (request.method) {
@@ -61,20 +58,10 @@ export class ExtensionUiBridge implements vscode.Disposable {
 				return;
 			}
 			case "setStatus":
-				if (request.statusText === undefined) {
-					this.statuses.delete(request.statusKey);
-				} else {
-					this.statuses.set(request.statusKey, request.statusText);
-				}
-				this.renderStatus();
+				this.host.logDiagnostic?.(`${request.statusKey}：${stripVTControlCharacters(request.statusText ?? "")}`);
 				return;
 			case "setWidget":
-				if (request.widgetLines === undefined) {
-					this.widgets.delete(request.widgetKey);
-				} else {
-					this.widgets.set(request.widgetKey, request.widgetLines);
-				}
-				this.renderStatus();
+				this.host.logDiagnostic?.(`${request.widgetKey}：${stripVTControlCharacters(request.widgetLines?.join("\n") ?? "")}`);
 				return;
 			case "setTitle":
 				this.host.setTitle(request.title);
@@ -86,33 +73,16 @@ export class ExtensionUiBridge implements vscode.Disposable {
 	}
 
 	/** 请求被取消时，尚未回答的对话框回复 cancelled */
-	cancelPending(): void {
+	cancelPending(notify = true): void {
 		for (const [id, source] of this.pending) {
 			source.cancel();
-			void this.host.respond(cancelled(id));
+			if (notify) void this.host.respond(cancelled(id));
 		}
 		this.pending.clear();
 	}
 
 	dispose(): void {
-		this.cancelPending();
-		this.statusItem.dispose();
-	}
-
-	private renderStatus(): void {
-		const texts = [...this.statuses.values()];
-		if (texts.length === 0 && this.widgets.size === 0) {
-			this.statusItem.hide();
-			return;
-		}
-		this.statusItem.text = `$(hubot) ${texts.join(" · ") || this.host.sessionLabel()}`;
-		const tooltip = new vscode.MarkdownString();
-		for (const [key, lines] of this.widgets) {
-			tooltip.appendMarkdown(`**${key}**\n\n`);
-			tooltip.appendCodeblock(lines.join("\n"), "text");
-		}
-		this.statusItem.tooltip = tooltip;
-		this.statusItem.show();
+		this.cancelPending(false);
 	}
 
 	private async offerEditorText(text: string): Promise<void> {

@@ -63,6 +63,9 @@ export interface HelloParams {
 	readonly token: string;
 	readonly sessionId: string;
 	readonly sessionFile: string | undefined;
+	readonly parentSessionId?: string;
+	readonly role: "root" | "child";
+	readonly identity: Pick<CommitIdentity, "sessionId" | "generationId" | "ownershipId" | "runtimeGeneration"> & Partial<Pick<CommitIdentity, "rootRequestId" | "runId" | "operationEpoch">>;
 }
 
 export interface HelloResult {
@@ -126,13 +129,27 @@ export interface ToolTextResult {
 	readonly isError: boolean;
 }
 
+export interface CommitIdentity {
+	readonly sessionId: string;
+	readonly generationId: string;
+	readonly ownershipId: string;
+	readonly runtimeGeneration: number;
+	readonly rootRequestId: string;
+	readonly runId: string;
+	readonly operationEpoch: number;
+}
+
 export interface ReadBaseParams {
 	readonly path: string;
 	readonly toolCallId: string;
+	readonly identity: CommitIdentity;
 }
 
 export interface ReadBaseResult {
 	readonly contentBase64: string;
+	readonly exists: boolean;
+	readonly hash: string | null;
+	readonly documentVersion: number | null;
 }
 
 export interface CommitParams {
@@ -140,6 +157,7 @@ export interface CommitParams {
 	readonly contentBase64: string;
 	readonly toolCallId: string;
 	readonly tool: "edit" | "write";
+	readonly identity: CommitIdentity;
 }
 
 export interface CommitResult {
@@ -159,3 +177,37 @@ export const FileCommit = new RequestType<CommitParams, CommitResult, void>("pi-
 /** 扩展宿主 → Pi 扩展 */
 export const SetTurnTools = new RequestType<SetTurnToolsParams, void, void>("pi-harness/setTurnTools");
 export const RecordRequest = new RequestType<RecordRequestParams, RecordRequestResult, void>("pi-harness/recordRequest");
+
+export interface RestoreCandidate {
+	readonly path: string;
+	readonly beforeHash: string | null;
+	readonly lastAfterHash: string;
+	readonly sourceHashes?: readonly string[];
+}
+
+export interface RestoreFileData {
+	readonly path: string;
+	readonly expectedBase64: string | null;
+	readonly targetBase64: string | null;
+	readonly expectedHash: string | null;
+	readonly targetHash: string | null;
+	readonly documentVersion: number | null;
+	readonly snapshotHashes: readonly string[];
+	readonly restored: boolean;
+}
+
+export interface RestorePrepareParams {
+	readonly operationId: string;
+	readonly rootRequestIds: readonly string[];
+	readonly files: readonly RestoreCandidate[];
+}
+
+export interface RestoreApplyParams {
+	readonly operationId: string;
+	readonly file: RestoreFileData;
+	readonly reopened: boolean;
+}
+
+export const FileRestorePrepare = new RequestType<RestorePrepareParams, readonly RestoreFileData[], void>("pi-harness/file/restorePrepare");
+export const FileRestoreApply = new RequestType<RestoreApplyParams, void, void>("pi-harness/file/restoreApply");
+export const FileWaitForIdle = new RequestType<void, void, void>("pi-harness/file/waitForIdle");

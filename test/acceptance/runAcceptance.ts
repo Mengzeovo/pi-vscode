@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,15 @@ function installedIn(dir: string): boolean {
 	return existsSync(dir) && readdirSync(dir).some((name) => name.toLowerCase().startsWith(EXTENSION_ID));
 }
 
+function installedState(): string {
+	if (!existsSync(USER_EXTENSIONS)) return "[]";
+	return JSON.stringify(readdirSync(USER_EXTENSIONS).filter((name) => name.toLowerCase().startsWith(EXTENSION_ID)).sort().map((name) => ({
+		name,
+		manifest: createHash("sha256").update(readFileSync(join(USER_EXTENSIONS, name, "package.json"))).digest("hex"),
+		extension: createHash("sha256").update(readFileSync(join(USER_EXTENSIONS, name, "dist", "extension.js"))).digest("hex"),
+	})));
+}
+
 /**
  * 安装验收：VS Code 以便携模式运行，便携数据目录为本次验收的目录，argv.json、用户数据和扩展都在其中。
  * 用 VS Code 的命令行把 VSIX 安装到该目录，在 argv.json 中按扩展 ID 授权实验接口，以普通方式启动，
@@ -24,9 +34,7 @@ async function main(): Promise<void> {
 	if (!existsSync(vsix)) {
 		throw new Error(`没有找到 VSIX：${vsix}`);
 	}
-	if (installedIn(USER_EXTENSIONS)) {
-		throw new Error(`${USER_EXTENSIONS} 中已有 ${EXTENSION_ID}，验收需要本机 VS Code 配置中没有这个扩展`);
-	}
+	const dailyInstallation = installedState();
 
 	const runName = `acceptance-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 	const layout = createLayout(runName);
@@ -42,9 +50,7 @@ async function main(): Promise<void> {
 	if (install.status !== 0) {
 		throw new Error(`安装 VSIX 失败，退出码 ${install.status}`);
 	}
-	if (installedIn(USER_EXTENSIONS)) {
-		throw new Error(`VSIX 被安装到了 ${USER_EXTENSIONS}，请卸载 ${EXTENSION_ID} 后检查 VSCODE_PORTABLE 为什么没有生效`);
-	}
+	if (installedState() !== dailyInstallation) throw new Error("独立安装期间日常 Pi Harness 文件发生变化");
 	if (!installedIn(layout.extensionsDir)) {
 		throw new Error(`${layout.extensionsDir} 中没有 ${EXTENSION_ID}`);
 	}
@@ -54,9 +60,7 @@ async function main(): Promise<void> {
 	if (existsSync(record)) {
 		console.log(readFileSync(record, "utf8"));
 	}
-	if (installedIn(USER_EXTENSIONS)) {
-		throw new Error(`验收结束后 ${USER_EXTENSIONS} 中出现了 ${EXTENSION_ID}`);
-	}
+	if (installedState() !== dailyInstallation) throw new Error("验收期间日常 Pi Harness 文件发生变化");
 	if (!passed) {
 		process.exit(1);
 	}

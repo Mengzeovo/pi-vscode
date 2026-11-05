@@ -49,7 +49,7 @@ export function createLayout(runName: string): TestLayout {
 	writeFileSync(join(layout.workspaceB, "README.md"), "# workspace-b\n");
 	// 模态对话框使用工作台内绘制的样式，界面测试才能点击其中的按钮
 	mkdirSync(join(layout.userDataDir, "User"), { recursive: true });
-	writeFileSync(join(layout.userDataDir, "User", "settings.json"), JSON.stringify({ "window.dialogStyle": "custom" }, null, "\t"));
+	writeFileSync(join(layout.userDataDir, "User", "settings.json"), JSON.stringify({ "window.dialogStyle": "custom", "chat.requestQueuing.defaultAction": "queue" }, null, "\t"));
 	return layout;
 }
 

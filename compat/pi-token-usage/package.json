@@ -1,0 +1,8 @@
+{
+  "name": "pi-token-usage-harness-compat",
+  "version": "0.2.1-harness.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "pi": { "extensions": ["./dist/index.js"] }
+}

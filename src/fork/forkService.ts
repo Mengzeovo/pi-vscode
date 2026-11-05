@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { open, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import * as vscode from "vscode";
 import { EDIT_ENTRY_TYPE, type EditEntryData, type ReferenceRecord, REQUEST_ENTRY_TYPE, type RequestEntryData } from "../../shared/protocol";
 import { userMessageText } from "../chat/historyRenderer";
 import { sha256 } from "../edits/snapshotStore";
+import { serializeFile } from "../edits/fileIdentity";
 import type { PiHub } from "../session/hub";
 import type { SessionLocation } from "../session/piSession";
 import { parseSessionResource, sessionResource } from "../sessions/sessionUri";
@@ -17,6 +18,7 @@ interface FileRestore {
 	readonly beforeHash: string | null;
 	/** Pi 最后一次写入后的内容 */
 	readonly lastAfterHash: string;
+	readonly expectedHash?: string | null;
 }
 
 interface RestorePlan {
@@ -200,7 +202,8 @@ export class ForkService {
 		const unchanged: FileRestore[] = [];
 		const changed: FileRestore[] = [];
 		for (const file of plan.files) {
-			((await currentHash(file.path)) === file.lastAfterHash ? unchanged : changed).push(file);
+			const expectedHash = await currentHash(file.path);
+			(expectedHash === file.lastAfterHash ? unchanged : changed).push({ ...file, expectedHash });
 		}
 		if (changed.length === 0) {
 			return unchanged;
@@ -221,11 +224,19 @@ export class ForkService {
 			throw new Error(`这些文件的快照已被清理，无法恢复：${missing.map((file) => file.path).join("、")}`);
 		}
 		for (const file of files) {
-			if (file.beforeHash === null) {
-				await rm(file.path, { force: true });
-			} else {
-				await writeFile(file.path, await this.hub.snapshots.get(file.beforeHash));
-			}
+			await serializeFile(file.path, async () => {
+				const document = vscode.workspace.textDocuments.find((candidate) => candidate.uri.scheme === "file" && samePath(candidate.uri.fsPath, file.path));
+				if (document?.isDirty) throw new Error(`${file.path} 包含未保存的修改，无法恢复`);
+				if (await currentHash(file.path) !== file.expectedHash) throw new Error(`${file.path} 在确认恢复后被修改，无法继续恢复`);
+				if (file.beforeHash === null) {
+					await rm(file.path, { force: true });
+				} else {
+					const bytes = await this.hub.snapshots.get(file.beforeHash);
+					const handle = await open(file.path, "w");
+					try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+				}
+				if (await currentHash(file.path) !== file.beforeHash) throw new Error(`${file.path} 恢复后的内容核对失败`);
+			});
 		}
 	}
 

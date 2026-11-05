@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright-core";
@@ -375,9 +376,56 @@ describe("界面操作", () => {
 			assert.ok(users[2].text.startsWith(edited));
 			console.log(`[测试] 编辑后的用户消息：${users[2].text}`);
 			assert.match(lastAssistantText(branch), /EDITED-REQUEST/);
+			assert.equal(await (await api.hub.backend()).pendingRecovery(sessionId, sessionFile), undefined, "编辑请求的恢复记录必须完成");
 			// VS Code 撤销了第三条请求中 Pi 的写入，文件回到第三条请求开始时的内容
 			assert.equal(readFileSync(target, "utf8").trim(), "v2");
 			await waitFor("列表不再显示被编辑的请求", async () => (await requestRow(page, "content: v3").count()) === 0, 30_000);
+		});
+
+		it("恢复完成后后台退出，保留输入及图片在明确发送后保存一次", async () => {
+			const api = await harness();
+			const page = await workbench();
+			const session = api.hub.existingSession(sessionId);
+			const location = await api.hub.locate(sessionId);
+			assert.ok(session && location?.sessionFile);
+			const branch = await readBranch(api, location.sessionFile);
+			const targetUser = [...branch].reverse().find((entry) => entry.type === "message" && entry.message.role === "user");
+			assert.ok(targetUser?.type === "message");
+			const original = customData<RequestEntryData>(await readEntries(api, location.sessionFile), REQUEST_ENTRY_TYPE).find((record) => record.userEntryId === targetUser.id);
+			assert.ok(original);
+			const imageFile = join(vscode.env.appRoot, "resources", "win32", "code_150x150.png");
+			const imageData = readFileSync(imageFile).toString("base64");
+			const contextBlock = "<vscode-context>\n<attachment name=\"保留的文字\">RECOVERY-CONTEXT-3182</attachment>\n</vscode-context>";
+			const prompt = "Reply with exactly: RECOVERY-INPUT-7412. Do not use any tools.";
+			await session.rewindBefore(targetUser.id, targetUser.parentId, {
+				requestId: randomUUID(), promptText: `${prompt}\n\n${contextBlock}`, userText: prompt, basePrompt: prompt, contextBlock,
+				references: [{ kind: "other", id: "recovery-text", name: "保留的文字" }, { kind: "image", id: "recovery-image", name: "Code 图标", uri: vscode.Uri.file(imageFile).toString() }],
+				images: [{ type: "image", data: imageData, mimeType: "image/png" }], enabledCopilotTools: [], selection: undefined,
+			}, [original.requestId]);
+			const backend = await api.hub.backend();
+			const pending = await backend.pendingRecovery(sessionId, location.sessionFile);
+			assert.equal(pending?.stage, "restored");
+			assert.ok(backend.pid);
+			process.kill(backend.pid);
+			await waitFor("恢复测试后台结束并释放权限", () => !session.isRunning && !session.holdsWritePermission);
+			await vscode.commands.executeCommand("piHarness.restoreInput", sessionId, pending!.operationId);
+			await waitFor("恢复文字进入实际输入框", async () => (await inputText(page)).includes(prompt));
+			const before = userMessages(await readBranch(api, location.sessionFile)).length;
+			await vscode.commands.executeCommand("workbench.action.chat.focusInput");
+			await page.keyboard.press("Enter");
+			const file = await waitForNewTurn(api, sessionId, before);
+			const after = await readBranch(api, file);
+			const users = userMessages(after);
+			assert.equal(users.length, before + 1);
+			assert.match(users.at(-1)!.text, /RECOVERY-CONTEXT-3182/);
+			assert.equal(users.at(-1)!.text.split("RECOVERY-CONTEXT-3182").length - 1, 1);
+			const user = [...after].reverse().find((entry) => entry.type === "message" && entry.message.role === "user");
+			assert.ok(user?.type === "message" && user.message.role === "user" && Array.isArray(user.message.content));
+			const images = user.message.content.filter((part) => part.type === "image");
+			assert.equal(images.length, 1);
+			assert.equal(images[0].data, imageData);
+			assert.match(lastAssistantText(after), /RECOVERY-INPUT-7412/);
+			assert.equal(await backend.pendingRecovery(sessionId, file), undefined);
 		});
 	});
 });

@@ -1,0 +1,7 @@
+{
+  "name": "@pi-harness/mcp-compat",
+  "version": "1.5.0-harness.1",
+  "type": "module",
+  "license": "MIT",
+  "exports": "./index.js"
+}

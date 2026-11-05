@@ -1,0 +1,8 @@
+{
+  "name": "pi-harness-lens",
+  "version": "4.4.8",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "pi": { "extensions": ["./index.js"], "skills": ["./skills"] }
+}

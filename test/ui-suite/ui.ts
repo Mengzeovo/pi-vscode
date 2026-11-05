@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type Browser, chromium, type Locator, type Page } from "playwright-core";
 import { env, waitFor } from "../suite/helpers";
 
@@ -11,12 +11,24 @@ export async function workbench(): Promise<Page> {
 		return connected.page;
 	}
 	const browser = await chromium.connectOverCDP(`http://127.0.0.1:${env("PI_HARNESS_TEST_CDP_PORT")}`);
-	const page = await waitFor("工作台页面", () =>
-		browser
-			.contexts()
-			.flatMap((context) => context.pages())
-			.find((candidate) => candidate.url().includes("workbench")),
-	);
+	const pages = await waitFor("工作台页面", () => {
+		const candidates = browser.contexts().flatMap((context) => context.pages()).filter((candidate) => candidate.url().includes("workbench"));
+		return candidates.length > 0 ? candidates : undefined;
+	});
+	const candidates = await Promise.all(pages.map(async (page) => ({
+		page,
+		instance: await page.evaluate(() => {
+			const native = (globalThis as typeof globalThis & { vscode: { context: { configuration(): { userDataDir?: string; windowId?: number; workspace?: unknown } } } }).vscode;
+			const config = native.context.configuration();
+			return { userDataDir: config.userDataDir, windowId: config.windowId, workspace: config.workspace };
+		}),
+	})));
+	const expected = resolve(join(env("PI_HARNESS_TEST_WORK"), "user-data")).toLowerCase();
+	const matched = candidates.filter((candidate) => candidate.instance.userDataDir !== undefined && resolve(candidate.instance.userDataDir).toLowerCase() === expected);
+	writeFileSync(join(env("PI_HARNESS_TEST_WORK"), "cdp-candidates.json"), JSON.stringify(candidates.map((candidate) => candidate.instance), null, 2));
+	if (matched.length !== 1) throw new Error("CDP 必须连接本次独立用户目录的唯一工作台页面");
+	const { page, instance } = matched[0];
+	writeFileSync(join(env("PI_HARNESS_TEST_WORK"), "cdp-instance.json"), JSON.stringify(instance, null, 2));
 	connected = { browser, page };
 	return page;
 }

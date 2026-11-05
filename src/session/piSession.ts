@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -9,25 +10,27 @@ import {
 	EditorDefinition,
 	EditorDiagnostics,
 	EditorReferences,
-	ENV_IPC_PATH,
-	ENV_IPC_TOKEN,
 	FileCommit,
 	FileReadBase,
+	FileRestoreApply,
+	FileRestorePrepare,
+	FileWaitForIdle,
 	RecordRequest,
 	type ReferenceRecord,
-	REWIND_COMMAND,
 	SetTurnTools,
 } from "../../shared/protocol";
 import { ExtensionUiBridge } from "../chat/extensionUi";
 import { userMessageText } from "../chat/historyRenderer";
 import { StreamRenderer } from "../chat/streamRenderer";
+import { composePrompt } from "../chat/requestContext";
 import { FileGate } from "../edits/fileGate";
 import type { SnapshotStore } from "../edits/snapshotStore";
 import { IpcServer } from "../ipc/ipcServer";
 import type { ThinkingLevel } from "../pi/catalog";
 import type { PiRuntime } from "../pi/piRuntime";
-import { describeExit, PiRpcProcess, type PiProcessExit } from "../pi/rpcProcess";
-import { WriteLock } from "../sessions/writeLock";
+import { type PiProcessExit } from "../pi/rpcProcess";
+import { BackendSessionChannel, type SharedBackendClient } from "../pi/sharedBackend";
+import { OperationStore, type OwnershipRecord, type RestoreOperation } from "../backend/operationStore";
 import { availableCopilotTools, invokeCopilotTool } from "../tools/copilotTools";
 import { findDefinitions, findReferences, readDiagnostics } from "../tools/editorTools";
 import { Deferred, delay } from "../util/deferred";
@@ -51,6 +54,7 @@ export interface ModelSelection {
 
 export interface SessionServices {
 	readonly runtime: PiRuntime;
+	readonly backend: SharedBackendClient;
 	readonly piExtensionPath: string;
 	readonly snapshots: SnapshotStore;
 	readonly log: (line: string) => void;
@@ -60,8 +64,7 @@ export interface SessionServices {
 	readonly onReleased: (sessionId: string) => void;
 	/** Pi 写入会话文件后通知（用于刷新列表） */
 	readonly onSessionFile: (location: SessionLocation) => void;
-	/** Pi 空闲多久后结束进程 */
-	readonly idleShutdownMs: () => number;
+	readonly hasSubscriptions: () => boolean;
 }
 
 interface Binding {
@@ -90,6 +93,8 @@ export interface PromptInput {
 	readonly requestId: string;
 	readonly promptText: string;
 	readonly userText: string;
+	readonly basePrompt?: string;
+	readonly contextBlock?: string;
 	readonly references: readonly ReferenceRecord[];
 	readonly images: readonly ImageContent[];
 	readonly enabledCopilotTools: readonly string[];
@@ -103,16 +108,15 @@ export class CancelledByUser extends Error {
 	}
 }
 
-/** 一个 Pi 会话在本窗口中的运行状态：子进程、写入权限、IPC 和当前承接输出的响应流 */
+/** 一个 Chat 的共享后台通道、写入权限和响应流。 */
 export class PiSession implements vscode.Disposable {
-	private process: PiRpcProcess | undefined;
+	private process: BackendSessionChannel | undefined;
 	private ipc: IpcServer | undefined;
-	private lock: WriteLock | undefined;
+	private ownership: OwnershipRecord | undefined;
 	private externalWritersConfirmed = false;
 	private busy = false;
 	private binding: Binding | undefined;
 	private renderer: StreamRenderer | undefined;
-	private idleTimer: NodeJS.Timeout | undefined;
 	private buffered: JsonAgentSessionEvent[] = [];
 	private unpersisted: JsonAgentSessionEvent[] = [];
 	private discardUntilSettled = false;
@@ -128,6 +132,8 @@ export class PiSession implements vscode.Disposable {
 	private contentReleased = false;
 	private pendingChatDialogs = 0;
 	private starting: Promise<void> | undefined;
+	private ready = false;
+	private recoveryDraft: RestoreOperation | undefined;
 	private exitSubscriptions: Array<() => void> = [];
 	/** 本窗口中由扩展创建（还没有文件的新会话或分叉出的会话），首次写入时不需要确认其他写入方 */
 	createdHere: boolean;
@@ -138,7 +144,10 @@ export class PiSession implements vscode.Disposable {
 		createdHere: boolean,
 	) {
 		this.createdHere = createdHere;
-		this.fileGate = new FileGate(services.snapshots, () => (this.binding?.kind === "participant" ? this.binding.stream : undefined));
+		this.fileGate = new FileGate(services.snapshots, () => (this.binding?.kind === "participant" ? this.binding.stream : undefined), async (identity) => {
+			if (identity.sessionId !== this.location.sessionId || identity.ownershipId !== this.ownership?.ownershipId) throw new Error("文件提交的会话身份已经失效");
+			await services.backend.validateIdentity(identity);
+		}, (edit) => services.backend.recordFileIntent(edit.identity, edit));
 		this.ui = new ExtensionUiBridge({
 			participantStream: () => {
 				const binding = this.binding;
@@ -163,6 +172,7 @@ export class PiSession implements vscode.Disposable {
 			respond: (response) => this.requireProcess().respondUi(response),
 			setTitle: (title) => services.onTitle(location.sessionId, title),
 			sessionLabel: () => `Pi ${location.sessionId.slice(0, 8)}`,
+			logDiagnostic: (message) => services.log(`[会话 ${location.sessionId.slice(0, 8)}] ${message}`),
 		});
 	}
 
@@ -171,11 +181,11 @@ export class PiSession implements vscode.Disposable {
 	}
 
 	get isRunning(): boolean {
-		return this.process !== undefined && !this.process.hasExited;
+		return this.ready && this.process !== undefined && !this.process.hasExited;
 	}
 
 	get holdsWritePermission(): boolean {
-		return this.lock !== undefined;
+		return this.services.backend.hasOwnership(this.location.sessionId);
 	}
 
 	get processId(): number | undefined {
@@ -188,12 +198,8 @@ export class PiSession implements vscode.Disposable {
 
 	/** 取得写入权限；其他窗口持有时报错，尚未持有的已有会话需要用户确认已关闭其他写入方 */
 	async ensureWritePermission(): Promise<void> {
-		if (this.lock) {
+		if (this.ownership && this.ownership.generationId === this.services.backend.generationId && this.holdsWritePermission) {
 			return;
-		}
-		const lock = await WriteLock.acquire(this.location.cwd, this.location.sessionId);
-		if (!lock) {
-			throw new Error("这个 Pi 会话正在另一个 VS Code 窗口中运行，请在那个窗口中继续，或先在那个窗口中把它交给终端。");
 		}
 		const hasFile = this.location.sessionFile !== undefined && existsSync(this.location.sessionFile);
 		if (hasFile && !this.createdHere && !this.externalWritersConfirmed) {
@@ -203,19 +209,22 @@ export class PiSession implements vscode.Disposable {
 				"已关闭，继续",
 			);
 			if (choice !== "已关闭，继续") {
-				await lock.release();
 				throw new CancelledByUser("用户取消了继续该会话");
 			}
 			this.externalWritersConfirmed = true;
 		}
-		this.lock = lock;
+		const acquired = await this.services.backend.acquire(this.location);
+		this.ownership = acquired.ownership;
+		this.location.sessionFile = acquired.sessionFile;
 	}
 
 	/** 启动 Pi 进程并完成 IPC 握手；已运行时直接返回 */
 	ensureStarted(): Promise<void> {
-		if (this.process && !this.process.hasExited) {
+		if (this.starting) return this.starting;
+		if (this.isRunning) {
 			return Promise.resolve();
 		}
+		if (this.process && !this.process.hasExited) return Promise.reject(new Error("Pi 会话资源尚未就绪，请通过会话菜单重新加载"));
 		this.starting ??= this.start().finally(() => {
 			this.starting = undefined;
 		});
@@ -223,57 +232,65 @@ export class PiSession implements vscode.Disposable {
 	}
 
 	private async start(): Promise<void> {
-		if (!this.lock) {
-			throw new Error("启动 Pi 进程前需要取得写入权限");
+		if (!this.ownership || !this.location.sessionFile) {
+			throw new Error("加载 Pi 会话前需要取得写入权限");
 		}
 		const ipc = await IpcServer.listen(
-			() => ({ copilotTools: availableCopilotTools() }),
+			async (hello) => {
+				const identity = hello.identity;
+				if (identity.sessionId !== this.location.sessionId || identity.generationId !== this.ownership?.generationId || identity.ownershipId !== this.ownership?.ownershipId) throw new Error("Pi 编辑器连接所属会话已经失效");
+				if (hello.role === "child") {
+					if (identity.rootRequestId === undefined || identity.runId === undefined || identity.operationEpoch === undefined) throw new Error("Pi 子任务缺少完整请求身份");
+					await this.services.backend.validateIdentity({ ...identity, rootRequestId: identity.rootRequestId, runId: identity.runId, operationEpoch: identity.operationEpoch });
+				}
+				return { copilotTools: availableCopilotTools() };
+			},
 			(connection) => this.configureConnection(connection),
 		);
-		const hasFile = this.location.sessionFile !== undefined && existsSync(this.location.sessionFile);
-		const args = [
-			...(hasFile ? ["--session", this.location.sessionFile as string] : ["--session-id", this.location.sessionId]),
-			"--session-dir",
-			this.location.sessionDir,
-			"--extension",
-			this.services.piExtensionPath,
-		];
-		const process = new PiRpcProcess({
-			runtime: this.services.runtime,
-			cwd: this.location.cwd,
-			args,
-			env: { [ENV_IPC_PATH]: ipc.endpoint.path, [ENV_IPC_TOKEN]: ipc.endpoint.token },
-			label: `会话 ${this.location.sessionId.slice(0, 8)}`,
-			log: this.services.log,
-		});
-		this.process = process;
 		this.ipc = ipc;
 		this.appliedSelection = undefined;
-		this.exitSubscriptions = [
-			process.onEvent((event) => this.onEvent(event)),
-			process.onExtensionUiRequest((request) => this.ui.handle(request)),
-			process.onExit((exit) => this.onExit(process, exit)),
-		];
-		const exited = process.whenExited.then((exit) => {
-			throw new Error(`Pi 进程在完成握手前退出，${describeExit(exit)}`);
-		});
-		const timeout = delay(HANDSHAKE_TIMEOUT_MS).then(() => {
-			throw new Error(`Pi 扩展在 ${HANDSHAKE_TIMEOUT_MS / 1000} 秒内没有完成 IPC 握手`);
-		});
+		const startupSubscription = `startup:${randomUUID()}`;
+		const viewSubscription = `view:${this.location.sessionId}`;
+		let openingChannel: BackendSessionChannel | undefined;
 		try {
-			await Promise.race([ipc.whenConnected(), exited, timeout]);
+			const process = await this.services.backend.open({
+				sessionId: this.location.sessionId, cwd: this.location.cwd, sessionDir: this.location.sessionDir,
+				sessionFile: this.location.sessionFile, ownershipId: this.ownership.ownershipId,
+				bridge: ipc.endpoint, projectTrusted: vscode.workspace.isTrusted,
+				initialSubscriptions: [startupSubscription, ...(this.services.hasSubscriptions() ? [viewSubscription] : [])],
+			}, (channel) => {
+				openingChannel = channel;
+				this.process = channel;
+				this.exitSubscriptions = [
+					channel.onEvent((event) => this.onEvent(event)),
+					channel.onExtensionUiRequest((request) => this.ui.handle(request)),
+					channel.onExit((exit) => this.onExit(channel, exit)),
+					channel.onSnapshot((snapshot) => {
+						this.busy = snapshot.busy;
+						this.services.onSessionFile(this.location);
+					}),
+				];
+			});
+			await Promise.race([ipc.whenConnected(), delay(HANDSHAKE_TIMEOUT_MS).then(() => { throw new Error("Pi 编辑器连接超过等待期限"); })]);
 			const state = await process.send({ type: "get_state" });
 			if (state.sessionId !== this.location.sessionId) {
 				throw new Error(`Pi 打开的会话 ${state.sessionId} 与预期的 ${this.location.sessionId} 不一致`);
 			}
-			if (hasFile && (state.sessionFile === undefined || resolve(state.sessionFile).toLowerCase() !== resolve(this.location.sessionFile as string).toLowerCase())) {
+			if (state.sessionFile === undefined || resolve(state.sessionFile).toLowerCase() !== resolve(this.location.sessionFile).toLowerCase()) {
 				throw new Error(`Pi 打开的会话文件 ${state.sessionFile ?? "无"} 与预期的 ${this.location.sessionFile} 不一致`);
 			}
 			this.location.sessionFile = state.sessionFile;
-			this.scheduleIdleShutdown();
+			this.contentReleased = !this.services.hasSubscriptions();
+			if (!this.contentReleased) await process.subscribe(viewSubscription);
+			else await process.unsubscribe(viewSubscription);
+			await process.unsubscribe(startupSubscription);
+			this.ready = true;
 		} catch (error) {
-			process.kill();
-			await ipc.close();
+			ipc.failPendingConnection(error instanceof Error ? error : new Error(String(error)));
+			if (openingChannel && !openingChannel.hasExited) {
+				try { await openingChannel.unsubscribe(startupSubscription); }
+				catch (cleanupError) { throw new AggregateError([error, cleanupError], "Pi 会话启动失败，启动保护尚未解除"); }
+			}
 			throw error;
 		}
 	}
@@ -285,6 +302,9 @@ export class PiSession implements vscode.Disposable {
 		connection.onRequest(EditorDiagnostics, (params) => readDiagnostics(cwd, params));
 		connection.onRequest(FileReadBase, (params) => this.fileGate.readBase(params));
 		connection.onRequest(FileCommit, (params) => this.fileGate.commit(params));
+		connection.onRequest(FileRestorePrepare, (params) => this.fileGate.prepareRestore(params));
+		connection.onRequest(FileRestoreApply, (params) => this.fileGate.applyRestore(params));
+		connection.onRequest(FileWaitForIdle, () => this.fileGate.waitForIdle());
 		connection.onRequest(CopilotInvoke, async (params, token) => {
 			const binding = this.binding;
 			if (binding?.kind !== "participant" || binding.toolInvocationToken === undefined) {
@@ -304,7 +324,7 @@ export class PiSession implements vscode.Disposable {
 		});
 	}
 
-	private requireProcess(): PiRpcProcess {
+	private requireProcess(): BackendSessionChannel {
 		if (!this.process || this.process.hasExited) {
 			throw new Error("Pi 进程没有运行");
 		}
@@ -359,7 +379,7 @@ export class PiSession implements vscode.Disposable {
 				await this.applySelection(input.selection);
 				this.pending.push({ requestId: input.requestId, userText: input.userText, references: input.references, mode: "steer", expectedText: undefined });
 				this.attach(binding);
-				const result = await process.send({ type: "prompt", message: input.promptText, images: [...input.images], streamingBehavior: "steer" });
+				const result = await process.send({ type: "prompt", message: input.promptText, images: [...input.images], streamingBehavior: "steer" }, input.requestId, { userText: input.userText, contextBlock: input.contextBlock, references: input.references });
 				if (result.disposition === "handled") {
 					this.removePending(input.requestId);
 				}
@@ -371,7 +391,7 @@ export class PiSession implements vscode.Disposable {
 				this.busy = true;
 				let disposition: string;
 				try {
-					disposition = (await process.send({ type: "prompt", message: input.promptText, images: [...input.images] })).disposition;
+					disposition = (await process.send({ type: "prompt", message: input.promptText, images: [...input.images] }, input.requestId, { userText: input.userText, contextBlock: input.contextBlock, references: input.references })).disposition;
 				} catch (error) {
 					this.busy = false;
 					this.removePending(input.requestId);
@@ -382,7 +402,7 @@ export class PiSession implements vscode.Disposable {
 					this.busy = false;
 					this.removePending(input.requestId);
 					this.detach(binding);
-					this.scheduleIdleShutdown();
+					this.services.onSessionFile(this.location);
 					return { aborted: false, error: undefined, interrupted: false };
 				}
 			}
@@ -503,7 +523,6 @@ export class PiSession implements vscode.Disposable {
 		switch (event.type) {
 			case "agent_start":
 				this.busy = true;
-				this.cancelIdleShutdown();
 				break;
 			case "queue_update":
 				this.onQueueUpdate(event.steering);
@@ -544,36 +563,6 @@ export class PiSession implements vscode.Disposable {
 			if (this.location.sessionFile && existsSync(this.location.sessionFile)) {
 				this.services.onSessionFile(this.location);
 			}
-			if (this.contentReleased) {
-				void this.shutdown();
-			} else {
-				this.scheduleIdleShutdown();
-			}
-		}
-	}
-
-	/**
-	 * Pi 空闲超过设定时间后结束进程并释放写入权限，下一次发送时重新启动。
-	 * 新建会话的内容在当前窗口中不会被 VS Code 释放（`chatServiceImpl.ts` 的 `_materializeUntitledSession` 保留了引用）。
-	 */
-	private scheduleIdleShutdown(): void {
-		this.cancelIdleShutdown();
-		if (!this.isRunning || this.busy) {
-			return;
-		}
-		this.idleTimer = setTimeout(() => {
-			this.idleTimer = undefined;
-			if (this.isRunning && !this.busy) {
-				this.services.log(`[会话 ${this.location.sessionId.slice(0, 8)}] 空闲超时，结束 Pi 进程`);
-				void this.shutdown();
-			}
-		}, this.services.idleShutdownMs());
-	}
-
-	private cancelIdleShutdown(): void {
-		if (this.idleTimer) {
-			clearTimeout(this.idleTimer);
-			this.idleTimer = undefined;
 		}
 	}
 
@@ -651,6 +640,8 @@ export class PiSession implements vscode.Disposable {
 				references: item.references,
 			});
 			this.requestEntries.set(item.requestId, result.userEntryId);
+			await this.services.backend.markSubmitted(this.location.sessionId, item.requestId, result.userEntryId);
+			this.recoveryDraft = undefined;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.services.log(`[会话 ${this.location.sessionId.slice(0, 8)}] 记录请求 ${item.requestId} 失败：${message}`);
@@ -658,7 +649,7 @@ export class PiSession implements vscode.Disposable {
 		}
 	}
 
-	private onExit(process: PiRpcProcess, exit: PiProcessExit): void {
+	private onExit(process: BackendSessionChannel, exit: PiProcessExit): void {
 		if (this.process !== process) {
 			return;
 		}
@@ -667,7 +658,7 @@ export class PiSession implements vscode.Disposable {
 		}
 		this.exitSubscriptions = [];
 		this.process = undefined;
-		this.cancelIdleShutdown();
+		this.ready = false;
 		const wasBusy = this.busy;
 		this.busy = false;
 		const binding = this.binding;
@@ -678,7 +669,7 @@ export class PiSession implements vscode.Disposable {
 		this.discardUntilSettled = false;
 		this.pending.length = 0;
 		this.lastSteering = [];
-		this.ui.cancelPending();
+		this.ui.cancelPending(false);
 		if (binding) {
 			if (wasBusy && !binding.token.isCancellationRequested) {
 				binding.stream.warning(`Pi 进程已退出（退出码 ${exit.code ?? "无"}），本轮中断。重新打开会话后可以重新提交。`);
@@ -691,15 +682,13 @@ export class PiSession implements vscode.Disposable {
 		const ipc = this.ipc;
 		this.ipc = undefined;
 		void ipc?.close();
-		void this.releaseLock();
+		this.ownership = undefined;
+		this.services.onReleased(this.location.sessionId);
 	}
 
 	private async releaseLock(): Promise<void> {
-		const lock = this.lock;
-		this.lock = undefined;
-		if (lock) {
-			await lock.release();
-		}
+		await this.services.backend.release(this.location.sessionId, false);
+		this.ownership = undefined;
 		this.services.onReleased(this.location.sessionId);
 	}
 
@@ -720,24 +709,58 @@ export class PiSession implements vscode.Disposable {
 		return this.stopping;
 	}
 
-	/**
-	 * 把 Pi 的当前分支退回到 userEntryId 之前：VS Code 中编辑请求时移除了该请求及之后的请求。
-	 * 由 Pi 扩展的内部命令调用 navigateTree，之后用 get_entries 核对当前叶子。
-	 */
-	async rewindBefore(userEntryId: string, expectedLeafId: string | null): Promise<void> {
-		if (this.busy) {
-			throw new Error("Pi 正在运行，不能退回会话分支");
-		}
-		const process = this.requireProcess();
-		const result = await process.send({ type: "prompt", message: `/${REWIND_COMMAND} ${userEntryId}` });
-		if (result.disposition !== "handled") {
-			throw new Error(`Pi 没有执行退回命令（${result.disposition}）`);
-		}
-		const { leafId } = await process.send({ type: "get_entries" });
-		if (leafId !== expectedLeafId) {
-			throw new Error(`Pi 的当前分支没有退回到 ${userEntryId} 之前（当前叶子 ${leafId ?? "无"}）`);
-		}
-		this.services.log(`[会话 ${this.location.sessionId.slice(0, 8)}] 当前分支退回到 ${userEntryId} 之前`);
+	/** 编辑历史时持久保存输入并等待原执行与文件恢复完成。 */
+	async rewindBefore(userEntryId: string, expectedLeafId: string | null, input: PromptInput, rootRequestIds: readonly string[]): Promise<void> {
+		this.fileGate.invalidate(rootRequestIds);
+		const operation = await this.services.backend.restore(this.location.sessionId, {
+			originalRequestId: rootRequestIds[0] ?? userEntryId, requestId: input.requestId,
+			targetId: userEntryId, targetParent: expectedLeafId, rootRequestIds,
+			input: { message: input.promptText, userText: input.userText, contextBlock: input.contextBlock, references: input.references, images: input.images },
+		});
+		if (operation.stage !== "restored" && operation.stage !== "completed") throw new Error(operation.error ?? "Pi 文件恢复尚未完成");
+		this.busy = false;
+		this.renderer = undefined; this.buffered = []; this.unpersisted = [];
+		this.pending.length = 0; this.lastSteering = [];
+		this.services.onSessionFile(this.location);
+	}
+
+	async recoverPending(): Promise<RestoreOperation | undefined> {
+		const file = this.location.sessionFile;
+		if (!file || !existsSync(OperationStore.pathFor(file))) return undefined;
+		const pending = await this.services.backend.pendingRecovery(this.location.sessionId, file);
+		if (!pending) return undefined;
+		await this.ensureWritePermission();
+		await this.ensureStarted();
+		return this.services.backend.resumeRecovery(this.location.sessionId);
+	}
+
+	async prepareRecoveryInput(operationId: string): Promise<RestoreOperation> {
+		const operation = await this.recoverPending();
+		if (!operation || operation.operationId !== operationId || operation.stage !== "restored" || operation.blocked) throw new Error("待发送输入所属恢复操作当前不可用，请重新打开会话");
+		this.recoveryDraft = operation;
+		return operation;
+	}
+
+	async applyRecoveryInput(input: PromptInput): Promise<PromptInput> {
+		const draft = this.recoveryDraft;
+		if (!draft) return input;
+		const pending = await this.services.backend.pendingRecovery(this.location.sessionId, this.location.sessionFile!);
+		if (!pending) { this.recoveryDraft = undefined; return input; }
+		if (pending.operationId !== draft.operationId || pending.stage !== "restored" || pending.blocked) throw new Error("保留输入的恢复状态已改变，请重新打开会话");
+		const saved = pending.input;
+		if (saved.references.some((reference) => reference.kind !== "image") && saved.contextBlock === undefined) throw new Error("保留的附件没有持久内容，请重新选择附件后发送");
+		const contextBlock = [saved.contextBlock, input.contextBlock].filter((block) => block && block.length > 0).join("\n\n");
+		const references = new Map(saved.references.map((reference) => [reference.id, reference]));
+		for (const reference of input.references) references.set(reference.id, reference);
+		const promptText = input.userText === (saved.userText ?? saved.message)
+			? composePrompt(saved.message, input.contextBlock ?? "")
+			: composePrompt(input.basePrompt ?? input.userText, contextBlock);
+		return { ...input, promptText, contextBlock, references: [...references.values()], images: [...saved.images ?? [], ...input.images] };
+	}
+
+	async requireRecoveryCompleted(): Promise<void> {
+		const pending = await this.recoverPending();
+		if (pending && pending.stage !== "completed") throw new Error(pending.error ?? "Pi 历史和文件已经恢复，请确认保留的输入并发送后继续此操作");
 	}
 
 	/** 在持有写入权限时修改会话文件；没有运行的 Pi 进程时，完成后释放写入权限 */
@@ -746,13 +769,18 @@ export class PiSession implements vscode.Disposable {
 			throw new Error("Pi 正在运行本轮任务，请在本轮结束后再操作");
 		}
 		await this.ensureWritePermission();
+		await this.requireRecoveryCompleted();
 		try {
 			return await work();
 		} finally {
-			if (!this.isRunning && this.lock) {
+			if (!this.isRunning && this.holdsWritePermission) {
 				await this.releaseLock();
 			}
 		}
+	}
+
+	async deleteFile(work: () => Promise<void>): Promise<void> {
+		await this.editFile(() => this.services.backend.withReleasedSession(this.location.sessionId, work));
 	}
 
 	/** 会话交给终端后，下次在 VS Code 中写入前重新确认其他写入方已关闭 */
@@ -778,12 +806,29 @@ export class PiSession implements vscode.Disposable {
 		return new Promise((resolveIdle) => this.idleWaiters.push(resolveIdle));
 	}
 
-	/** VS Code 释放了该会话的内容：空闲时结束 Pi 进程并释放写入权限 */
+	/** VS Code 的内容引用决定后台会话能否被释放。 */
 	markContentReleased(released: boolean): void {
+		if (this.contentReleased === released) return;
 		this.contentReleased = released;
-		if (released && !this.busy && this.isRunning) {
-			void this.shutdown();
+		if (this.process && !this.process.hasExited) {
+			const update = released ? this.process.unsubscribe(`view:${this.location.sessionId}`) : this.process.subscribe(`view:${this.location.sessionId}`);
+			void update.catch((error: unknown) => this.services.log(`Pi 会话引用更新失败：${error instanceof Error ? error.message : String(error)}`));
 		}
+	}
+
+	async setArchived(archived: boolean): Promise<void> {
+		await this.requireRecoveryCompleted();
+		if (this.isRunning) await this.requireProcess().protect({ recovery: false, archived });
+	}
+
+	async reload(): Promise<void> {
+		await this.ensureWritePermission();
+		await this.requireRecoveryCompleted();
+		await this.starting;
+		if (!this.process || this.process.hasExited) await this.ensureStarted();
+		else { await this.requireProcess().reload(); this.ready = true; }
+		this.appliedSelection = undefined;
+		this.services.onSessionFile(this.location);
 	}
 
 	/** 通过运行中的 Pi 进程写入会话名称 */
@@ -798,38 +843,26 @@ export class PiSession implements vscode.Disposable {
 		stream.progress("Pi 正在压缩上下文");
 		const result = await this.requireProcess().send({ type: "compact" });
 		stream.markdown(`已压缩上下文：${result.tokensBefore} 个 token 之前的内容改为摘要。`);
-		this.scheduleIdleShutdown();
+		this.services.onSessionFile(this.location);
 	}
 
-	/** 关闭标准输入请 Pi 有序退出；deadline 毫秒内没有退出时结束整个进程树 */
-	async shutdown(deadlineMs?: number): Promise<void> {
+	/** 释放当前会话，窗口后台继续服务其他会话。 */
+	async shutdown(_deadlineMs?: number): Promise<void> {
 		const process = this.process;
 		if (!process || process.hasExited) {
-			if (this.lock) {
+			if (this.holdsWritePermission) {
 				await this.releaseLock();
 			}
 			return;
 		}
-		const exited = process.shutdown();
-		if (deadlineMs === undefined) {
-			await exited;
-			return;
-		}
-		const result = await Promise.race([exited.then(() => "exited" as const), delay(deadlineMs).then(() => "timeout" as const)]);
-		if (result === "timeout") {
-			process.killTree();
-			await exited;
-		}
+		await this.requireRecoveryCompleted();
+		await process.unsubscribe(`view:${this.location.sessionId}`);
+		await process.shutdown(false);
 	}
 
-	/** 扩展停用：运行中的会话先清空队列并中止，再关闭标准输入，超时后结束进程树 */
+	/** 单会话关闭由后台确认所属任务与工具均已结束。 */
 	async deactivate(): Promise<void> {
-		if (this.busy && this.isRunning) {
-			const idle = this.whenIdle();
-			await this.stop();
-			await Promise.race([idle, delay(3000)]);
-		}
-		await this.shutdown(3000);
+		if (this.isRunning) await this.requireProcess().shutdown(true);
 	}
 
 	dispose(): void {

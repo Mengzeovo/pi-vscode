@@ -2,5 +2,11 @@
 !package.json
 !README.md
 !INSTALL.md
+!DEVELOPMENT_PLAN.md
+!ACCEPTANCE.md
 !dist/extension.js
 !dist/pi-extension/index.js
+!dist/backend/**
+!dist/guardian/**
+!dist/compat/**
+!dist/node_modules/**

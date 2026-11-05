@@ -66,7 +66,8 @@ describe("安装验收", () => {
 		const runtime = await api.hub.runtime();
 		// 便携数据目录即本次验收目录，扩展应当从其中的 extensions 目录加载
 		const installed = extension.extensionPath.toLowerCase().startsWith(join(env("PI_HARNESS_TEST_WORK"), "extensions").toLowerCase());
-		record("安装与授权", "扩展从便携数据目录的 extensions 中加载，实验接口可用，找到 Pi 1.5.x", `扩展目录 ${extension.extensionPath}；Pi ${runtime.version}；node ${runtime.nodeVersion}`, installed && runtime.version.startsWith("1.5."));
+		record("安装与授权", "扩展从便携数据目录的 extensions 中加载，实验接口可用，找到 Pi 1.5.0", `扩展目录 ${extension.extensionPath}；Pi ${runtime.version}；node ${runtime.nodeVersion}`, installed && runtime.version === "1.5.0");
+		assert.ok(installed && runtime.version === "1.5.0");
 	});
 
 	it("附加选区、Pi 修改文件、打开差异", async () => {
@@ -228,7 +229,7 @@ describe("安装验收", () => {
 		const location = await api.hub.locate(sessionId);
 		await sleep(8000);
 		const passed = options.shellArgs?.includes(location?.sessionFile ?? "-") === true && api.hub.existingSession(sessionId)?.isRunning !== true;
-		record("在终端中继续", "VS Code 中的 Pi 进程退出、释放写入权限，终端以 --session 打开同一会话文件", `终端参数：${JSON.stringify(options.shellArgs)}；VS Code 中 Pi 进程运行：${api.hub.existingSession(sessionId)?.isRunning ?? false}`, passed);
+		record("在终端中继续", "所属会话关闭并释放写入权限，终端以 --session 打开同一会话文件", `终端参数：${JSON.stringify(options.shellArgs)}；VS Code 中该会话运行：${api.hub.existingSession(sessionId)?.isRunning ?? false}`, passed);
 		terminal.dispose();
 		assert.ok(passed);
 	});

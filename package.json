@@ -3,9 +3,13 @@
 	"publisher": "local",
 	"displayName": "Pi Harness",
 	"description": "在 VS Code Chat 中使用 Pi 编码代理",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"license": "UNLICENSED",
 	"private": true,
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Mengzeovo/pi-vscode.git"
+	},
 	"engines": {
 		"vscode": "^1.144.0"
 	},
@@ -20,7 +24,8 @@
 		"chatParticipantAdditions",
 		"chatReferenceDiagnostic",
 		"chatReferenceBinaryData",
-		"chatProvider"
+		"chatProvider",
+		"chatSessionCustomizationProvider"
 	],
 	"capabilities": {
 		"untrustedWorkspaces": {
@@ -48,12 +53,17 @@
 					"supportsImageAttachments": true,
 					"supportsSymbolAttachments": true,
 					"supportsProblemAttachments": true,
-					"supportsToolAttachments": true
+					"supportsToolAttachments": true,
+					"supportsPromptAttachments": true
 				},
 				"commands": [
 					{
 						"name": "compact",
 						"description": "压缩 Pi 会话的上下文"
+					},
+					{
+						"name": "reload",
+						"description": "重新加载当前 Pi 会话的资源"
 					}
 				]
 			}
@@ -65,6 +75,11 @@
 			}
 		],
 		"commands": [
+			{
+				"command": "piHarness.reloadSession",
+				"title": "重新加载会话",
+				"category": "Pi"
+			},
 			{
 				"command": "piHarness.quoteSelection",
 				"title": "引用选中的回复内容",
@@ -154,6 +169,11 @@
 			],
 			"chat/chatSessions": [
 				{
+					"command": "piHarness.reloadSession",
+					"when": "chatSessionType == pi-harness",
+					"group": "1_edit@3"
+				},
+				{
 					"command": "piHarness.renameSession",
 					"when": "chatSessionType == pi-harness",
 					"group": "1_edit@1"
@@ -183,7 +203,14 @@
 					"type": "number",
 					"default": 10,
 					"minimum": 1,
-					"markdownDescription": "Pi 会话空闲多少分钟后结束其 Pi 进程并释放写入权限。下一次发送消息时自动重新启动。"
+					"markdownDeprecationMessage": "请使用 `piHarness.sessionResidencyLimit` 管理保留的会话数量。",
+					"markdownDescription": "已停用的历史配置项。"
+				},
+				"piHarness.sessionResidencyLimit": {
+					"type": "integer",
+					"default": 10,
+					"minimum": 0,
+					"markdownDescription": "共享后台保留的空闲会话目标数量。正在执行、仍有界面订阅或操作未完成的会话继续保留。"
 				}
 			}
 		}
@@ -199,10 +226,24 @@
 		"package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license"
 	},
 	"dependencies": {
+		"@js-temporal/polyfill": "0.5.1",
 		"@vscode/prompt-tsx": "0.4.0-alpha.9",
+		"acorn": "8.18.0",
+		"chokidar": "5.0.0",
 		"gpt-tokenizer": "4.1.0",
+		"jiti": "2.7.0",
+		"koffi": "3.3.6",
+		"minimatch": "11.0.3",
+		"pi-lens": "4.4.8",
 		"semver": "7.8.6",
-		"vscode-jsonrpc": "10.0.0"
+		"undici": "8.12.3",
+		"vscode-jsonrpc": "10.0.0",
+		"yaml": "2.8.3"
+	},
+	"overrides": {
+		"pi-token-usage": {
+			"@earendil-works/pi-coding-agent": "$@earendil-works/pi-coding-agent"
+		}
 	},
 	"devDependencies": {
 		"@earendil-works/pi-coding-agent": "1.5.0",
@@ -215,6 +256,7 @@
 		"esbuild": "0.28.2",
 		"mocha": "12.0.3",
 		"playwright-core": "1.64.1",
+		"pi-token-usage": "0.2.1",
 		"typescript": "7.0.2"
 	}
 }
