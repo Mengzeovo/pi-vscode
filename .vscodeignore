@@ -5,6 +5,7 @@
 !INSTALL.md
 !DEVELOPMENT_PLAN.md
 !ACCEPTANCE.md
+!docs/images/*.jpg
 !dist/extension.js
 !dist/pi-extension/index.js
 !dist/backend/**
