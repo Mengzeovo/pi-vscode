@@ -6,7 +6,7 @@ import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import type { AgentSession, AgentSessionEvent, AgentSessionRuntime, JsonAgentSessionEvent, RpcSessionState, SessionManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, AgentSessionRuntime, AgentSessionServices, JsonAgentSessionEvent, RpcSessionState, ScopedModel, SessionManager, Theme } from "@earendil-works/pi-coding-agent";
 import { createMessageConnection, SocketMessageReader, SocketMessageWriter, type MessageConnection } from "vscode-jsonrpc/node";
 import { FileRestoreApply, FileRestorePrepare, FileWaitForIdle, Hello, type CommitIdentity, type CopilotToolDeclaration } from "../../shared/protocol";
 import { BackendCatalogChanged, BackendEvent, BackendSessionChanged, BackendSessionReleased, BackendSnapshot, BackendUi,
@@ -226,11 +226,13 @@ export class BackendRegistry {
 				}
 				const resources = entry.resources;
 				const services = await resources.load(entry.generation, entry.extensionFlags);
+				const scopedModels = await this.resolveSavedModelScope(services);
 				const selected = entry.options.model;
-				const model = selected ? services.modelRuntime.getAvailableSnapshot().find((model) => model.provider === selected.provider && model.id === selected.modelId) : undefined;
+				const initial = entry.manager.buildSessionContext().messages.length === 0 ? scopedModels?.[0] : undefined;
+				const model = selected ? services.modelRuntime.getAvailableSnapshot().find((model) => model.provider === selected.provider && model.id === selected.modelId) : initial?.model;
 				if (selected && !model) throw new Error(`模型不可用：${selected.provider}/${selected.modelId}`);
 				entry.runtime = await this.factory.sdk.createAgentSessionRuntime(async () => ({ ...(await this.factory.sdk.createAgentSessionFromServices({ services, sessionManager: entry.manager,
-					model, thinkingLevel: selected?.thinkingLevel, sessionStartEvent: { type: "session_start", reason: reload ? "reload" : "startup" } })), services, diagnostics: services.diagnostics }),
+					model, thinkingLevel: selected ? selected.thinkingLevel : initial?.thinkingLevel, scopedModels, sessionStartEvent: { type: "session_start", reason: reload ? "reload" : "startup" } })), services, diagnostics: services.diagnostics }),
 					{ cwd: entry.options.cwd, agentDir: services.agentDir, sessionManager: entry.manager });
 				resources.checkDiagnostics();
 				await this.bind(entry);
@@ -598,7 +600,9 @@ export class BackendRegistry {
 				let unsubscribe: (() => void) | undefined;
 				try {
 					const services = await resources.load(1);
-					runtime = await this.factory.sdk.createAgentSessionRuntime(async () => ({ ...await this.factory.sdk.createAgentSessionFromServices({ services, sessionManager: manager }), services, diagnostics: services.diagnostics }), { cwd: params.cwd, agentDir: services.agentDir, sessionManager: manager });
+					const scopedModels = await this.resolveSavedModelScope(services);
+					runtime = await this.factory.sdk.createAgentSessionRuntime(async () => ({ ...await this.factory.sdk.createAgentSessionFromServices({ services, sessionManager: manager,
+						model: scopedModels?.[0]?.model, thinkingLevel: scopedModels?.[0]?.thinkingLevel, scopedModels }), services, diagnostics: services.diagnostics }), { cwd: params.cwd, agentDir: services.agentDir, sessionManager: manager });
 					unsubscribe = runtime.session.extensionRunner.onError((error) => errors.push(`${error.extensionPath}: ${error.error}`));
 					resources.checkDiagnostics();
 					await this.factory.compat.runHarnessScope(resources.scope, () => runtime!.session.bindExtensions({ mode: "print", onError: (error) => errors.push(`${error.extensionPath}: ${error.error}`) }));
@@ -627,9 +631,23 @@ export class BackendRegistry {
 		return withDeadline(pending, LOAD_TIMEOUT_MS, "资源目录查询");
 	}
 
+	private async resolveSavedModelScope(services: Pick<AgentSessionServices, "settingsManager" | "modelRuntime">): Promise<ScopedModel[] | undefined> {
+		const patterns = services.settingsManager.getEnabledModels();
+		if (!patterns?.length) return undefined;
+		const { scopedModels, diagnostics } = await this.factory.sdk.resolveModelScopeWithDiagnostics(patterns, services.modelRuntime, { signal: AbortSignal.timeout(15_000) });
+		if (scopedModels.length === 0) throw new Error(`Pi 已保存的 scoped-models 范围没有匹配到可用模型：${patterns.join(", ")}。请检查 enabledModels 和模型认证后刷新模型列表。`);
+		for (const diagnostic of diagnostics) console.warn(`Pi scoped-models：${diagnostic.message}`);
+		return scopedModels;
+	}
+
 	private async catalogFrom(session: AgentSession, resources: SessionResources): Promise<BackendCatalogSnapshot> {
-		const models = session.modelRuntime.getAvailableSnapshot();
-		const selected = models.find((model) => model.provider === session.model?.provider && model.id === session.model.id); const thinking = session.thinkingLevel;
+		const scopedModels = await this.resolveSavedModelScope({ settingsManager: resources.original, modelRuntime: session.modelRuntime });
+		const models = scopedModels?.map((item) => item.model) ?? session.modelRuntime.getAvailableSnapshot();
+		const current = models.find((model) => model.provider === session.model?.provider && model.id === session.model.id);
+		const selected = current ?? scopedModels?.[0]?.model;
+		const thinking = current || !scopedModels ? session.thinkingLevel : scopedModels[0]?.thinkingLevel
+			?? (selected ? resources.original.getModelThinkingLevel(selected.provider, selected.id) : undefined)
+			?? resources.original.getDefaultThinkingLevel() ?? session.thinkingLevel;
 		const levels: Record<string, RpcSessionState["thinkingLevel"][]> = {};
 		for (const model of models) {
 			// 目录查询对象没有持久历史；活动会话仅使用模型公开能力。

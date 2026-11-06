@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runTests } from "@vscode/test-electron";
 import { createLayout, portableEnvironment, ROOT, VSCODE_EXECUTABLE } from "./environment";
@@ -12,6 +13,8 @@ async function main(): Promise<void> {
 	const grep = args.find((arg) => !arg.startsWith("--"));
 	const runName = `run-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 	const layout = createLayout(runName);
+	const workspaceFile = join(layout.base, "tests.code-workspace");
+	writeFileSync(workspaceFile, JSON.stringify({ folders: [{ path: layout.workspaceA }] }));
 	const suite = withoutProposed ? "no-proposed-suite" : "suite";
 	const portable = portableEnvironment(layout);
 	await runTests({
@@ -19,7 +22,7 @@ async function main(): Promise<void> {
 		extensionDevelopmentPath: ROOT,
 		extensionTestsPath: join(ROOT, "dist", "test", suite, "index.js"),
 		launchArgs: [
-			layout.workspaceA,
+			workspaceFile,
 			...(withoutProposed ? [] : ["--enable-proposed-api=local.pi-harness"]),
 			// 与便携模式的目录相同；不传入时 @vscode/test-electron 会改用 .vscode-test 中的目录
 			`--user-data-dir=${layout.userDataDir}`,

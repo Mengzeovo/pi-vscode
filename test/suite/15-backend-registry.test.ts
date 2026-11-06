@@ -27,11 +27,11 @@ describe("共享后台驻留与重新加载", () => {
 		await mkdir(join(directory, ".pi"), { recursive: true });
 		const [provider, ...model] = TEST_MODEL.split("/");
 		const projectFile = join(directory, ".pi", "settings.json");
-		await writeFile(projectFile, JSON.stringify({ defaultProvider: provider, defaultModel: model.join("/"), defaultThinkingLevel: "low" }));
+		await writeFile(projectFile, JSON.stringify({ defaultProvider: provider, defaultModel: model.join("/"), defaultThinkingLevel: "low", enabledModels: [TEST_MODEL] }));
 		const globalFile = join(runtime.modules.getAgentDir(), "settings.json");
 		const defaults = async (path: string) => {
 			const data = existsSync(path) ? JSON.parse(await readFile(path, "utf8")) as Record<string, unknown> : {};
-			return { defaultProvider: data.defaultProvider, defaultModel: data.defaultModel, defaultThinkingLevel: data.defaultThinkingLevel, modelThinkingLevels: data.modelThinkingLevels };
+			return { defaultProvider: data.defaultProvider, defaultModel: data.defaultModel, defaultThinkingLevel: data.defaultThinkingLevel, modelThinkingLevels: data.modelThinkingLevels, enabledModels: data.enabledModels };
 		};
 		const before = { global: await defaults(globalFile), project: await defaults(projectFile) };
 		const sessionDir = await (await api.hub.sessionCatalog()).sessionDirFor(directory);

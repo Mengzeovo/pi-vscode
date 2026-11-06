@@ -1,9 +1,9 @@
-# Pi Harness 0.2.0 安装与使用
+# Pi Harness 0.2.1 安装与使用
 
 ## 运行条件
 
 - Windows 11 x64。
-- VS Code Stable 1.144.0 或 1.144.1，启用 `local.pi-harness` 使用的实验接口。其他版本需要重新验证。
+- VS Code Stable 1.145.1，启用 `local.pi-harness` 使用的实验接口。各版本的检查范围见 `ACCEPTANCE.md`。
 - Pi 精确版本 `1.5.0`，npm 包为 `@earendil-works/pi-coding-agent`。
 - PATH 中的 Node.js 至少为 `24.15.0`。后台的恢复记录使用 `node:sqlite`。
 - 本地工作区已经获得 VS Code 信任；项目 `.pi` 资源按 Pi 的信任设置加载。
@@ -22,7 +22,7 @@ pi
 安装交付的扩展包：
 
 ```powershell
-code --install-extension pi-harness-0.2.0.vsix
+code --install-extension pi-harness-0.2.1.vsix
 ```
 
 在命令面板执行 **Preferences: Configure Runtime Arguments**，在 `argv.json` 的对象中加入：
@@ -45,6 +45,7 @@ code --install-extension pi-harness-0.2.0.vsix
 
 - 在 Chat 中新建 Pi 会话。多个工作区文件夹同时打开时，输入区的“工作目录”决定该草稿使用的目录。
 - 在模型选择器中选择 Pi 模型及思考级别。文件、选区、符号、Problems 和图片可以作为附件发送。
+- 模型列表按照 Pi 已保存的 `enabledModels` 筛选。可以在终端的 `/scoped-models` 中选择模型并保存，再执行 **Pi: 刷新 Pi 模型列表**。项目 `.pi/settings.json` 中的设置优先；多个工作区目录的筛选结果合并显示并去除重复项。没有设置范围或范围为空时显示全部可用模型；设置的范围没有匹配到可用模型时显示错误提示。
 - 当前请求执行期间，按 Enter 将下一条消息加入 VS Code 队列。选择 **Steer with Message** 或对应快捷键可以发送引导消息。
 - 点击停止按钮会停止当前会话的执行及其所属任务。其他会话继续运行。
 - 输入 `/` 可以选择该工作目录的有效 Pi 技能；技能参数和附件随请求提交。

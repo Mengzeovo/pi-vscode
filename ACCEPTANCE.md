@@ -1,6 +1,16 @@
-# Pi Harness 0.2.0 验收记录
+# Pi Harness 验收记录
 
-## 环境与证据
+## 0.2.1 模型范围检查
+
+- 源码类型检查、构建及十一项相关集成与回归测试通过，覆盖已保存范围、默认模型、思考级别、通配符、无匹配、刷新、多目录、实际 Chat 请求和会话恢复。
+- 在 VS Code Stable 1.145.1 中安装 0.2.1 VSIX，确认扩展从安装目录加载；七项 scoped-models 集成测试全部通过，实际模型为 `cpa/gpt-6-astra` 和 `cpa/gpt-6-luna`。
+- VSIX 的版本、必需文件和本机路径检查通过。
+
+源码测试结果：`.test-work/run-2026-11-06T02-59-59-337Z/results.json`。
+
+安装测试结果：`.test-work/installed-scoped-2026-11-06T03-16-43-198Z/results.json`。
+
+## 0.2.0 环境与证据
 
 本次检查在 Windows 11 x64 中执行，使用 Pi 1.5.0、Node.js 24.15.0，以及独立 VS Code 1.144.0 和 1.144.1 配置。模型请求连接本机已配置的真实服务，主要模型为 `cliproxyapi/gpt-6-astra`，模型切换使用 `cliproxyapi/gpt-6-luna`。
 

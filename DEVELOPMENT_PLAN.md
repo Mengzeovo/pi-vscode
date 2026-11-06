@@ -1,4 +1,4 @@
-# Pi Harness 0.2.0 开发说明
+# Pi Harness 0.2.1 开发说明
 
 ## 运行结构
 

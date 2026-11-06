@@ -458,10 +458,16 @@ export class PiHub implements vscode.Disposable {
 		for (const [key, catalog] of this.modelCatalogs) {
 			if (!keep.has(key)) {
 				this.modelCatalogs.delete(key);
+				continue;
 			}
-			await catalog.refresh();
+			catalog.invalidate();
 		}
-		this.choicesChanged.fire();
+		try {
+			await Promise.all([...this.modelCatalogs.values()].map((catalog) => catalog.refresh()));
+		} finally {
+			this.choicesPromise = undefined;
+			this.choicesChanged.fire();
+		}
 	}
 
 	isArchived(sessionId: string): boolean {
