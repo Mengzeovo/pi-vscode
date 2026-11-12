@@ -1,6 +1,6 @@
 # Pi Harness 兼容资源
 
-运行环境为 Pi 1.5.0、Node.js 24.15.0 或更高版本。全部包保留上游许可证；兼容修改位于本目录。用户原有安装目录保持原内容。
+运行环境使用当前安装的 Pi、Node.js 24.15.0 或更高版本。全部包保留上游许可证；兼容修改位于本目录。用户原有安装目录保持原内容。
 
 | 目录 | 来源版本 | 项目内来源 | 许可证 |
 |---|---|---|---|
@@ -20,7 +20,7 @@
 
 `pi-token-usage/build.mjs` 的 `buildTokenUsage(output, packageDirectory?)` 从固定版本完整入口构建，保留上游命令、界面与统计范围；`scan.js` 使用 Pi 公开 `parseSessionEntries` 读取会话记录。缓存按照文件身份、纳秒时间和大小更新，新增、追加、重写、删除和替换文件都会重新计算。该包作为构建依赖，生产扩展包含已构建的 `dist/compat/pi-token-usage/dist/index.js`。
 
-构建执行 `npm ci` 和 `npm run build`。`scripts/build.mjs` 将本目录原样复制到 `dist/compat`，调用 `buildLensRuntime` 生成 `dist/compat/pi-lens/dist/runtime.cjs`，调用 `buildTokenUsage` 生成统计扩展入口，保留 runner、资源及相对导入路径；生产依赖复制到 `dist/node_modules`。动态 Pi SDK 与 `typebox` 解析到配置指定的 Pi 1.5.0 安装目录。VSIX 包含 `dist/compat`、生产依赖及许可证。
+构建执行 `npm ci` 和 `npm run build`。`scripts/build.mjs` 将本目录原样复制到 `dist/compat`，调用 `buildLensRuntime` 生成 `dist/compat/pi-lens/dist/runtime.cjs`，调用 `buildTokenUsage` 生成统计扩展入口，保留 runner、资源及相对导入路径；生产依赖复制到 `dist/node_modules`。动态 Pi SDK 与 `typebox` 解析到当前选定的 Pi 安装目录。VSIX 包含 `dist/compat`、生产依赖及许可证。
 
 来源文件 SHA-256：
 

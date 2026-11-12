@@ -39,19 +39,19 @@ Pi 会话分别保存工作目录、模型、历史和扩展资源。可以浏�
 
 ## 开始使用
 
-当前版本支持 **Windows 11 x64**，已验证 **VS Code Stable 1.145.1**，需要 **Node.js 24.15.0 或更高版本**和 **Pi 1.5.0**。通过 VSIX 安装，并为本扩展启用实验接口。
+当前版本支持 **Windows 11 x64**，已验证 **VS Code Stable 1.145.1**，需要 **Node.js 24.15.0 或更高版本**和已安装的 **Pi**。插件直接加载当前安装的 Pi，不限制 Pi 版本号。通过 VSIX 安装，并为本扩展启用实验接口。
 
 1. 安装 Pi，在终端中完成模型配置或登录：
 
    ```powershell
-   npm install -g @earendil-works/pi-coding-agent@1.5.0
+   npm install -g @earendil-works/pi-coding-agent
    pi
    ```
 
-2. 从 [GitHub Releases](https://github.com/Mengzeovo/pi-vscode/releases/latest) 下载 `pi-harness-0.2.1.vsix`，在 VS Code 中选择 **Extensions → Install from VSIX…**，或执行：
+2. 安装 `pi-harness-0.2.2.vsix`，在 VS Code 中选择 **Extensions → Install from VSIX…**，或执行：
 
    ```powershell
-   code --install-extension pi-harness-0.2.1.vsix
+   code --install-extension pi-harness-0.2.2.vsix
    ```
 
 3. 执行 **Preferences: Configure Runtime Arguments**，在打开的 `argv.json` 对象中添加：

@@ -1,5 +1,18 @@
 # Pi Harness 验收记录
 
+## 0.2.2 Pi 版本兼容检查
+
+- Windows 11 x64、Node.js 24.15.0、VS Code Stable 1.145.1，当前全局 Pi 为 1.5.2。
+- 五项真实运行环境测试通过：全局定位、指定安装目录、开发依赖中的 Pi 1.5.0，以及两个安装目录的 MCP 接口。
+- 安装 0.2.2 VSIX 后，九项真实扩展宿主测试全部通过，覆盖 Chat 回复、目录查询、重新加载、模型默认设置、模型范围解析、刷新、多目录和模型轮换。
+- 类型检查、构建与安装包内容检查通过。运行时直接加载当前选定的 Pi 安装目录，不限制 Pi 版本号。
+
+运行环境测试：`node --test dist/test/runtime/*.test.js`。
+
+安装测试结果：`.test-work/installed-runtime-2026-11-11T14-21-12-442Z/results.json`。
+
+安装与包内容记录：`.test-work/pi-version/installed-verification.json`、`.test-work/pi-version/package-verification.json`。
+
 ## 0.2.1 模型范围检查
 
 - 源码类型检查、构建及十一项相关集成与回归测试通过，覆盖已保存范围、默认模型、思考级别、通配符、无匹配、刷新、多目录、实际 Chat 请求和会话恢复。

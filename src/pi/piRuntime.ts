@@ -11,7 +11,6 @@ import { parseJson } from "../util/json";
 const execFileAsync = promisify(execFile);
 
 export const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
-export const SUPPORTED_PI_RANGE = "1.5.0";
 
 export interface PiModules {
 	readonly SessionManager: typeof Pi.SessionManager;
@@ -69,9 +68,6 @@ export async function loadPiRuntime(configuredPackagePath: string): Promise<PiRu
 	const manifest = parseJson<PiPackageJson>(await readFile(manifestPath, "utf8"), manifestPath);
 	if (manifest.name !== PI_PACKAGE_NAME) {
 		throw new Error(`${packageDir} 中的包是 ${manifest.name}，需要 ${PI_PACKAGE_NAME}`);
-	}
-	if (!semver.satisfies(manifest.version, SUPPORTED_PI_RANGE)) {
-		throw new Error(`已安装的 Pi 版本 ${manifest.version} 不在支持范围 ${SUPPORTED_PI_RANGE} 内`);
 	}
 	const node = await resolveNode(manifest.engines.node);
 

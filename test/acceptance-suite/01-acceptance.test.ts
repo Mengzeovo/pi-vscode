@@ -64,10 +64,12 @@ describe("安装验收", () => {
 		assert.ok(extension);
 		const api = await harness();
 		const runtime = await api.hub.runtime();
+		const manifest = JSON.parse(readFileSync(join(runtime.packageDir, "package.json"), "utf8"));
 		// 便携数据目录即本次验收目录，扩展应当从其中的 extensions 目录加载
 		const installed = extension.extensionPath.toLowerCase().startsWith(join(env("PI_HARNESS_TEST_WORK"), "extensions").toLowerCase());
-		record("安装与授权", "扩展从便携数据目录的 extensions 中加载，实验接口可用，找到 Pi 1.5.0", `扩展目录 ${extension.extensionPath}；Pi ${runtime.version}；node ${runtime.nodeVersion}`, installed && runtime.version === "1.5.0");
-		assert.ok(installed && runtime.version === "1.5.0");
+		record("安装与授权", "扩展从便携数据目录的 extensions 中加载，实验接口可用，加载当前安装的 Pi", `扩展目录 ${extension.extensionPath}；Pi ${runtime.version}；node ${runtime.nodeVersion}`, installed && runtime.version === manifest.version);
+		assert.ok(installed);
+		assert.equal(runtime.version, manifest.version);
 	});
 
 	it("附加选区、Pi 修改文件、打开差异", async () => {

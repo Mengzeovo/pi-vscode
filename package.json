@@ -3,7 +3,7 @@
 	"publisher": "local",
 	"displayName": "Pi Harness",
 	"description": "在 VS Code Chat 中使用 Pi 编码代理",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"license": "UNLICENSED",
 	"private": true,
 	"repository": {
@@ -218,7 +218,8 @@
 	"scripts": {
 		"build": "node scripts/build.mjs",
 		"typecheck": "tsc -p tsconfig.json --noEmit && tsc -p pi-extension/tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
-		"test": "npm run build && node dist/test/runTests.js",
+		"test": "npm run build && node --test dist/test/runtime/*.test.js && node dist/test/runTests.js",
+		"test:runtime": "npm run build && node --test dist/test/runtime/*.test.js",
 		"test:ui": "npm run build && node dist/test/ui/runUiTests.js",
 		"test:reopen": "npm run build && node dist/test/ui/runReopenTest.js",
 		"test:no-proposed": "npm run build && node dist/test/runTests.js --no-proposed",

@@ -145,10 +145,17 @@ describe("已保存 scoped-models", () => {
 			const catalog = await backend.catalog(directory.cwd, true, false, session.location.sessionId);
 			assert.deepEqual(catalog.models.map(modelKey), [OTHER_MODEL]);
 			assert.equal(catalog.defaultModel, OTHER_MODEL);
-			assert.equal(await request("cycle_model"), null);
-			const unchanged = await request("get_state");
-			assert.ok(unchanged.model);
-			assert.equal(modelKey(unchanged.model), TEST_MODEL);
+			const cycled = await request("cycle_model");
+			const afterCycle = await request("get_state");
+			assert.ok(afterCycle.model);
+			if (cycled === null) {
+				assert.equal(modelKey(afterCycle.model), TEST_MODEL);
+			} else {
+				assert.ok(cycled.isScoped);
+				assert.equal(modelKey(cycled.model), OTHER_MODEL);
+				assert.equal(modelKey(afterCycle.model), OTHER_MODEL);
+				assert.equal(afterCycle.thinkingLevel, cycled.thinkingLevel);
+			}
 		} finally {
 			if (session.isRunning) await session.shutdown();
 		}
