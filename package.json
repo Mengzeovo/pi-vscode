@@ -3,7 +3,7 @@
 	"publisher": "local",
 	"displayName": "Pi Harness",
 	"description": "在 VS Code Chat 中使用 Pi 编码代理",
-	"version": "0.2.2",
+	"version": "0.2.3",
 	"license": "UNLICENSED",
 	"private": true,
 	"repository": {
@@ -197,7 +197,7 @@
 					"type": "string",
 					"default": "",
 					"scope": "machine",
-					"markdownDescription": "Pi 包 `@earendil-works/pi-coding-agent` 的安装目录。留空时通过 `npm root -g` 定位全局安装。"
+					"markdownDescription": "Pi 包 `@earendil-works/pi-coding-agent` 的安装目录。留空时优先定位 Pi 托管安装（`~/.pi/agent/install`），未找到时回退到 `npm root -g`。"
 				},
 				"piHarness.idleShutdownMinutes": {
 					"type": "number",

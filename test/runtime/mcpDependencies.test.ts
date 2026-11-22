@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { loadPiRuntime } from "../../src/pi/piRuntime";
 import { ROOT } from "../environment";
 
-for (const [name, packagePath] of [["全局安装", ""], ["开发依赖", join(ROOT, "node_modules", "@earendil-works", "pi-coding-agent")]]) {
+for (const [name, packagePath] of [["本机自动定位", ""], ["开发依赖", join(ROOT, "node_modules", "@earendil-works", "pi-coding-agent")]]) {
 	test(`${name}的 Pi 提供完整 MCP 接口`, async () => {
 		const runtime = await loadPiRuntime(packagePath);
 		const moduleUrl = pathToFileURL(join(ROOT, "compat", "pi-mcp", "dependencies.js"));

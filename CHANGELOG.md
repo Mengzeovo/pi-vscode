@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.2.3 — 2026-11-22
+
+- 留空 `piHarness.piPackagePath` 时优先定位 Pi 托管安装（依次检查 `PI_MANAGED_INSTALL_ROOT`、`PI_CODING_AGENT_DIR` 与默认 `~/.pi/agent/install` 下的 `managed-install.json` 和 `current-version`），未找到时回退到 `npm root -g`。
+- 通过“在终端中继续此会话”交接托管安装的 Pi 时传递 `PI_MANAGED_INSTALL_ROOT`。
+- 补充 Pi 包定位逻辑单元测试，并适配本机托管安装环境的运行环境检查。
+
 ## 0.2.2 — 2026-11-11
 
 - 直接加载全局安装或 `piHarness.piPackagePath` 指定的 Pi，不限制 Pi 版本号。

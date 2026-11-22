@@ -142,6 +142,7 @@ async function continueInTerminal(hub: PiHub, item: vscode.ChatSessionItem | und
 		cwd: location.cwd,
 		shellPath: runtime.nodeExecutable,
 		shellArgs: [runtime.cliEntry, "--session", location.sessionFile, "--session-dir", location.sessionDir],
+		...(runtime.managedInstallRoot ? { env: { PI_MANAGED_INSTALL_ROOT: runtime.managedInstallRoot } } : {}),
 		iconPath: new vscode.ThemeIcon("hubot"),
 	});
 	terminal.show();

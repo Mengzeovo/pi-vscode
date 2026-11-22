@@ -12,57 +12,58 @@
 
 ![Pi 在 VS Code 中完成任务摘要功能，展示文件修改和通过的测试](docs/images/pi-chat.jpg)
 
-*真实演示：为任务摘要添加完成率与高优先级待办统计，补充测试，并在编辑器中审阅修改。演示项目的 5 项测试全部通过。*
+*真实演示：为任务摘要新增完成率与高优先级待办统计，补充测试，并在编辑器中审阅文件差异（演示项目 5 项测试全部通过）。*
 
 ## 从需求到修改，都在编辑器里
 
-- **让上下文跟着问题走。** 添加文件、选区、符号、Problems 或图片，让 Pi 围绕当前任务工作。
-- **看清每一次修改。** 回复中打开文件差异，在编辑器中审阅；编辑历史消息或使用 Fork Conversation，继续探索另一种实现。
-- **按自己的节奏交流。** 执行期间可以排队发送下一条消息，也可以通过 Steer with Message 调整当前任务；停止操作针对当前会话及其所属任务。
-- **继续使用 Pi 的资源。** 在输入框中选择技能，通过 `/reload` 重新读取当前会话的扩展、技能和模型资源。
+- **让上下文跟着问题走。** 附加文件、选区、符号、Problems 或图片，让 Pi 围绕当前任务工作。
+- **看清每一次修改。** 在回复中直接打开文件差异并在编辑器内审阅；也可编辑历史消息，或使用 Fork Conversation 分叉会话以探索其他实现。
+- **按自己的节奏交流。** 执行期间可排队发送下一条消息，或通过 Steer with Message 实时引导当前任务；停止操作仅作用于当前会话及其子任务，不影响其他会话。
+- **沿用现有 Pi 资源。** 在输入框中直接调用技能，随时通过 `/reload` 重新加载当前会话的扩展、技能、MCP 与模型配置。
 
 ## 模型由你选择
 
 ![Pi 模型详情中的思考级别和上下文容量选项](docs/images/pi-models.jpg)
 
-模型选择器使用 Pi 的认证与模型配置，并按照已保存的 **scoped-models** 范围显示模型。思考级别随模型能力提供，工作区包含多个目录时，会合并各目录的模型范围并去除重复项。
+模型选择器直接复用 Pi 的认证与模型配置，按已保存的 **scoped-models** 范围展示模型，并随模型能力自动提供对应的思考级别。多目录工作区会自动合并各目录的模型范围并去重。
 
-在终端 Pi 的 `/scoped-models` 中保存选择后，执行 **Pi: 刷新 Pi 模型列表** 即可读取新的范围。没有设置范围或范围为空时，显示全部可用模型。
+在终端 Pi 中通过 `/scoped-models` 保存选择后，在 VS Code 执行 **Pi: 刷新 Pi 模型列表** 即可生效；未配置范围或范围为空时，默认显示全部可用模型。
 
 ## 会话可以接着用
 
 ![Pi 的独立演示会话与会话管理菜单](docs/images/pi-sessions.jpg)
 
-Pi 会话分别保存工作目录、模型、历史和扩展资源。可以浏览当前工作区的历史，重命名会话、重新加载资源，也可以在终端中继续同一段对话。
+每个 Pi 会话独立管理各自的工作目录、模型、对话历史与扩展资源。你可以随时浏览当前工作区的历史会话、重命名或重新加载资源，也可以交接到终端继续同一段对话。
 
-每个 VS Code 窗口共用一个 Pi 后台，按配置释放空闲会话资源。状态栏的 **Pi** 按钮提供会话状态、CPU 和内存信息。
+同一 VS Code 窗口共用一个 Pi 后台进程，并按配置自动释放空闲会话资源；悬停状态栏的 **Pi** 按钮即可查看会话状态以及 CPU、内存占用。
 
 ## 开始使用
 
-当前版本支持 **Windows 11 x64**，已验证 **VS Code Stable 1.145.1**，需要 **Node.js 24.15.0 或更高版本**和已安装的 **Pi**。插件直接加载当前安装的 Pi，不限制 Pi 版本号。通过 VSIX 安装，并为本扩展启用实验接口。
+当前版本支持 **Windows 11 x64**（已验证 **VS Code Stable 1.145.1**），需要 **Node.js 24.15.0+** 与已安装的 **Pi**（不限制版本号，自动识别托管安装，也兼容全局 npm）。扩展通过 VSIX 安装，并需启用实验接口。
 
-1. 安装 Pi，在终端中完成模型配置或登录：
+1. 安装 Pi（可通过 [pi.dev](https://pi.dev) 官方安装器或 npm 全局安装），然后在终端运行 `pi` 完成登录或模型配置：
 
    ```powershell
+   # 若使用 npm 全局安装
    npm install -g @earendil-works/pi-coding-agent
    pi
    ```
 
-2. 安装 `pi-harness-0.2.2.vsix`，在 VS Code 中选择 **Extensions → Install from VSIX…**，或执行：
+2. 在 VS Code 中通过 **Extensions → Install from VSIX…** 安装 `pi-harness-0.2.3.vsix`，或命令行执行：
 
    ```powershell
-   code --install-extension pi-harness-0.2.2.vsix
+   code --install-extension pi-harness-0.2.3.vsix
    ```
 
-3. 执行 **Preferences: Configure Runtime Arguments**，在打开的 `argv.json` 对象中添加：
+3. 在命令面板执行 **Preferences: Configure Runtime Arguments**，向打开的 `argv.json` 中加入：
 
    ```json
    "enable-proposed-api": ["local.pi-harness"]
    ```
 
-   完全退出并重新启动 VS Code，打开已信任的本地项目，在 Chat 的新建会话类型中选择 **Pi**。
+   完全退出并重启 VS Code，打开已信任的本地项目，在 Chat 的新建会话类型中选择 **Pi** 即可开始。
 
-项目资源信任、消息排队设置、文件恢复范围和终端交接见 [安装与使用](INSTALL.md)。
+关于项目资源信任、消息排队设置、文件恢复范围、自定义 Pi 路径与终端交接，见 [安装指南](INSTALL.md)。
 
 ## 开发与验证
 
@@ -76,13 +77,14 @@ npm run build
 npm run package
 ```
 
-测试使用独立 VS Code 配置、真实 Pi SDK、模型、进程和工具。准备测试用 VS Code 副本时，将下面的路径替换为本机 `Code.exe` 的实际位置：
+测试使用独立 VS Code 配置以及真实的 Pi SDK、模型、进程与工具。准备测试用 VS Code 副本时，将下面的路径替换为本机 `Code.exe` 的实际位置：
 
 ```powershell
 node dist/test/setupVscode.js "C:\Path\To\VS Code\Code.exe"
 ```
 
 ```powershell
+npm run test:runtime
 npm test
 npm run test:ui
 npm run test:reopen
@@ -90,7 +92,7 @@ npm run test:no-proposed
 npm run test:acceptance
 ```
 
-`PI_HARNESS_VSCODE` 可以指定其他测试用 `Code.exe`。测试配置、会话及结果保存在 `.test-work`；安装验收使用独立的扩展目录。界面检查通过 DOM 和实际事件完成，引用功能需要可读写剪贴板的桌面会话。
+可通过环境变量 `PI_HARNESS_VSCODE` 指定其他测试用 `Code.exe`。测试配置、会话与结果均输出至 `.test-work`，安装验收使用独立扩展目录，不影响日常 VS Code 配置。界面测试基于真实 DOM 与交互事件运行，引用功能需在可读写剪贴板的桌面会话中验证。
 
 </details>
 

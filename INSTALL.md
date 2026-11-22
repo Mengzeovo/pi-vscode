@@ -1,16 +1,16 @@
-# Pi Harness 0.2.2 安装与使用
+# Pi Harness 0.2.3 安装与使用
 
 ## 运行条件
 
 - Windows 11 x64。
 - VS Code Stable 1.145.1，启用 `local.pi-harness` 使用的实验接口。各版本的检查范围见 `ACCEPTANCE.md`。
-- 已安装 Pi，npm 包为 `@earendil-works/pi-coding-agent`。插件直接加载当前安装的 Pi，不限制 Pi 版本号。
+- 已安装 Pi（支持官方托管安装及 npm 全局包 `@earendil-works/pi-coding-agent`）。插件直接加载当前安装的 Pi，不限制 Pi 版本号。
 - PATH 中的 Node.js 至少为 `24.15.0`。后台的恢复记录使用 `node:sqlite`。
 - 本地工作区已经获得 VS Code 信任；项目 `.pi` 资源按 Pi 的信任设置加载。
 
 ## 安装
 
-安装 Pi，并在终端中完成模型配置或登录：
+安装 Pi（可使用官方托管安装，或通过 npm 全局安装），并在终端中完成模型配置或登录：
 
 ```powershell
 npm install -g @earendil-works/pi-coding-agent
@@ -22,7 +22,7 @@ pi
 安装交付的扩展包：
 
 ```powershell
-code --install-extension pi-harness-0.2.2.vsix
+code --install-extension pi-harness-0.2.3.vsix
 ```
 
 在命令面板执行 **Preferences: Configure Runtime Arguments**，在 `argv.json` 的对象中加入：
@@ -94,7 +94,7 @@ Fork Conversation 可以复制请求之前的历史，并提供文件恢复选�
 
 `pi-lens` 为每个会话分别管理编辑检查和语言服务。`pi-token-usage` 缓存已读取的会话文件，每次刷新检查文件变化，继续统计完整历史中的 token 和费用。
 
-- `piHarness.piPackagePath`：指定 Pi 包目录；留空时通过 `npm root -g` 查找。
+- `piHarness.piPackagePath`：指定 Pi 包目录；留空时优先定位 Pi 托管安装（`~/.pi/agent/install`），未找到时回退到 `npm root -g`。
 - `piHarness.sessionResidencyLimit`：空闲会话的保留目标数量。
 - Copilot 查询工具需要当前 VS Code 配置已登录且实际提供这些工具。
 
