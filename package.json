@@ -3,7 +3,7 @@
 	"publisher": "local",
 	"displayName": "Pi Harness",
 	"description": "在 VS Code Chat 中使用 Pi 编码代理",
-	"version": "0.2.3",
+	"version": "0.2.5",
 	"license": "UNLICENSED",
 	"private": true,
 	"repository": {

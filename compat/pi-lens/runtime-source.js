@@ -138432,8 +138432,9 @@ function recordMajorGc() {
   settledHeapUsedBytes = process.memoryUsage().heapUsed;
   majorGcCount += 1;
 }
+var gcObserver;
 try {
-  const gcObserver = new PerformanceObserver((list) => {
+  gcObserver = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
       const detail = entry.detail;
       if (detail?.kind === MAJOR_GC_KIND) {
@@ -157699,6 +157700,20 @@ ${withheldNotices.slice(0, 5).join("\n")}${withheldNotices.length > 5 ? `
       if (error) throw new Error(String(error));
     }
     await flushAllNdjsonWriters();
+    try { runtime.wordIndex = null; runtime.callGraph = null; runtime.cachedExports?.clear?.(); } catch {}
+    try { if (typeof clearReviewGraphWorkspaceCache === "function" && _workspaceGraphCache) clearReviewGraphWorkspaceCache(); } catch {}
+    if (_shared) {
+      try { _shared.treeCache?.clear?.(); } catch {}
+      try { for (const entry of _shared.queryCache?.values?.() ?? []) entry?.query?.delete?.(); _shared.queryCache?.clear?.(); } catch {}
+      try { for (const batch of _shared.queryBatchCache?.values?.() ?? []) _shared.retireQueryBatch?.(batch); _shared.queryBatchCache?.clear?.(); _shared.queryBatchInputs?.clear?.(); } catch {}
+      try { for (const parser of _shared.parsers?.values?.() ?? []) parser?.delete?.(); _shared.parsers?.clear?.(); } catch {}
+      try { _shared.languages?.clear?.(); } catch {}
+      _shared = null;
+    }
+    try { gcObserver?.disconnect(); } catch {}
+    gcObserver = void 0;
+    try { histogram?.disable(); } catch {}
+    histogram = void 0;
   });
   pi.on("session_shutdown", async (event, ctx) => {
     const stableSessionId2 = (() => {

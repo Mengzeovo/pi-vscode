@@ -32,9 +32,11 @@ async function setup(name: string, cwd?: string) {
 		const slash = TEST_MODEL.indexOf("/");
 		await backend.request(BackendCommand, { ...request, command: { type: "set_model", provider: TEST_MODEL.slice(0, slash), modelId: TEST_MODEL.slice(slash + 1) } });
 		await backend.request(BackendCommand, { ...request, command: { type: "prompt", message: "Use the write tool to create authorization.txt containing exactly READY. Then reply READY. Do not use other tools." } });
-		await waitFor("真实模型完成授权文件写入", () => {
+		await waitFor("真实模型完成授权文件写入", async () => {
 			const snapshot = backend.snapshot?.sessions.find((entry) => entry.sessionId === request.sessionId);
-			return existsSync(join(directory, "authorization.txt")) && snapshot && !snapshot.busy && snapshot.messages.some((message) => typeof message === "object" && message !== null && "role" in message && message.role === "assistant" && "stopReason" in message && message.stopReason === "stop") ? snapshot : undefined;
+			if (!existsSync(join(directory, "authorization.txt")) || !snapshot || snapshot.busy) return undefined;
+			const { messages } = await backend.request(BackendCommand, { ...request, requestId: randomUUID(), command: { type: "get_messages" } }) as { messages: unknown[] };
+			return messages.some((message) => typeof message === "object" && message !== null && "role" in message && message.role === "assistant" && "stopReason" in message && message.stopReason === "stop") ? snapshot : undefined;
 		});
 		assert.equal(await readFile(join(directory, "authorization.txt"), "utf8"), "READY");
 		store = new OperationStore(session.location.sessionFile!);
@@ -296,7 +298,12 @@ describe("历史恢复文件提交", () => {
 				await value.backend.request(BackendCommand, { ...envelope, requestId: replacement, command: { type: "prompt", message: input.promptText, images: [...input.images] }, input: { userText: input.userText, contextBlock: input.contextBlock, references: input.references } });
 				const submitted = await waitFor("明确发送产生实际用户条目", async () => (await readBranch(value.api, value.session.location.sessionFile!)).find((entry) => entry.type === "message" && entry.message.role === "user" && messageText(entry.message.content).includes(`EDITED-${replacement}`)));
 				await value.backend.markSubmitted(envelope.sessionId, replacement, submitted.id);
-				await waitFor("明确发送完成模型回复", () => value.backend.snapshot?.sessions.find((entry) => entry.sessionId === envelope.sessionId && !entry.busy && entry.messages.some((item) => typeof item === "object" && item !== null && "role" in item && item.role === "assistant" && "content" in item && messageText(item.content).includes(`EDITED-${replacement}`))));
+				await waitFor("明确发送完成模型回复", async () => {
+					const entry = value.backend.snapshot?.sessions.find((item) => item.sessionId === envelope.sessionId && !item.busy);
+					if (!entry) return undefined;
+					const { messages } = await value.backend.request(BackendCommand, { ...envelope, requestId: randomUUID(), command: { type: "get_messages" } }) as { messages: unknown[] };
+					return messages.some((item) => typeof item === "object" && item !== null && "role" in item && item.role === "assistant" && "content" in item && messageText(item.content).includes(`EDITED-${replacement}`)) ? entry : undefined;
+				});
 				assert.equal(value.store.getPendingRestore(), undefined);
 				assert.equal(existsSync(after), false);
 				const completed = value.store.getRestore(pending.operationId);
@@ -337,7 +344,12 @@ describe("历史恢复文件提交", () => {
 			await value.backend.request(BackendCommand, { ...envelope, requestId, command: { type: "prompt", message: prompt } });
 			const submitted = await waitFor("重新打开后明确发送产生用户条目", async () => (await readBranch(value.api, reopened.location.sessionFile!)).find((entry) => entry.type === "message" && entry.message.role === "user" && messageText(entry.message.content) === prompt));
 			await value.backend.markSubmitted(sessionId, requestId, submitted.id);
-			await waitFor("重新打开后完成模型回复", () => value.backend.snapshot?.sessions.find((entry) => entry.sessionId === sessionId && !entry.busy && entry.messages.some((item) => typeof item === "object" && item !== null && "role" in item && item.role === "assistant" && "content" in item && messageText(item.content).includes(`ARCHIVE-${requestId}`))));
+			await waitFor("重新打开后完成模型回复", async () => {
+				const entry = value.backend.snapshot?.sessions.find((item) => item.sessionId === sessionId && !item.busy);
+				if (!entry) return undefined;
+				const { messages } = await value.backend.request(BackendCommand, { ...envelope, requestId: randomUUID(), command: { type: "get_messages" } }) as { messages: unknown[] };
+				return messages.some((item) => typeof item === "object" && item !== null && "role" in item && item.role === "assistant" && "content" in item && messageText(item.content).includes(`ARCHIVE-${requestId}`)) ? entry : undefined;
+			});
 			assert.equal(value.store.getPendingRestore(), undefined);
 			const directory = join(env("PI_HARNESS_TEST_WORK"), "history-recovery", "unloaded-archive");
 			await mkdir(directory, { recursive: true });

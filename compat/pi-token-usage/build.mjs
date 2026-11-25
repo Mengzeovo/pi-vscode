@@ -9,9 +9,12 @@ export async function buildTokenUsage(output, packageDirectory) {
     const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
     if (metadata.name !== "pi-token-usage" || metadata.version !== "0.2.1") throw new Error("用量统计兼容包要求 pi-token-usage 0.2.1");
     const sourceDirectory = resolve(directory, "src");
-    await build({ entryPoints: [join(sourceDirectory, "index.ts")], outfile: output, bundle: true, format: "esm", platform: "node", target: "node24",
+    await build({ entryPoints: [fileURLToPath(new URL("./index.js", import.meta.url))], outfile: output, bundle: true, format: "esm", platform: "node", target: "node24",
         external: ["@earendil-works/pi-coding-agent"], sourcemap: true,
         plugins: [{ name: "harness-usage-scan", setup(builder) {
+            builder.onResolve({ filter: /^pi-token-usage-upstream\/(.+)$/ }, args => {
+                return { path: join(sourceDirectory, args.path.slice("pi-token-usage-upstream/".length)) };
+            });
             builder.onResolve({ filter: /^\.\/scan$/ }, args => {
                 if (resolve(args.resolveDir) !== sourceDirectory) throw new Error(`未知用量统计来源：${args.importer}`);
                 return { path: fileURLToPath(new URL("./scan.js", import.meta.url)) };

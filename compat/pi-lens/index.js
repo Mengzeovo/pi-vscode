@@ -14,6 +14,7 @@ const normalized = (value) => process.platform === "win32" ? resolve(value).toLo
 export default async function activate(pi) {
     const scope = currentHarnessScope();
     if (!scope) throw new Error("pi-lens 需要所属 Harness 会话上下文");
+    if (scope.catalogOnly) return;
     const localRequire = createRequire(import.meta.url);
     const originalEntry = localRequire.resolve("pi-lens");
     const source = fileURLToPath(new URL("./dist/runtime.cjs", import.meta.url));
@@ -21,7 +22,7 @@ export default async function activate(pi) {
         ["exports", "require", "module", "__filename", "__dirname", "globalThis", "global", "process", "console", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "setImmediate", "clearImmediate", "__harnessModuleUrl", "__harness"],
         { filename: originalEntry, importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER }));
     const execute = await compiled;
-    const state = { cwd: scope.cwd, closing: false, closed: false, processValues: new Map(), listeners: new Set(), timers: new Set(), children: new Set(), workers: new Set(), tasks: new Set(), failures: [] };
+    const state = { cwd: scope.cwd, closing: false, closed: false, processValues: new Map(), listeners: new Set(), timers: new Set(), children: new Set(), workers: new Set(), tasks: new Set(), perfObservers: new Set(), eventLoopMonitors: new Set(), asyncHooks: new Set(), asyncStorages: new Set(), failures: [] };
     const cleanup = new AsyncLocalStorage();
     instances.add(state);
     const ownedPids = () => state.processValues.get(lifetimeKey)?.pids ?? new Set();
@@ -102,6 +103,37 @@ export default async function activate(pi) {
     class OwnedWorker extends workerModule.Worker {
         constructor(...args) { assertStarting(); super(...args); state.workers.add(this); this.once("exit", () => state.workers.delete(this)); }
     }
+    const perfHooksModule = localRequire("node:perf_hooks");
+    class OwnedPerformanceObserver extends perfHooksModule.PerformanceObserver {
+        constructor(...args) { super(...args); state.perfObservers.add(this); }
+        observe(...args) { assertStarting(); state.perfObservers.add(this); return super.observe(...args); }
+        disconnect(...args) { state.perfObservers.delete(this); return super.disconnect(...args); }
+    }
+    const perfHooks = {
+        ...perfHooksModule,
+        PerformanceObserver: OwnedPerformanceObserver,
+        monitorEventLoopDelay: (...args) => {
+            assertStarting();
+            const histogram = perfHooksModule.monitorEventLoopDelay(...args);
+            state.eventLoopMonitors.add(histogram);
+            return histogram;
+        },
+    };
+    const asyncHooksModule = localRequire("node:async_hooks");
+    class OwnedAsyncLocalStorage extends asyncHooksModule.AsyncLocalStorage {
+        constructor(...args) { super(...args); state.asyncStorages.add(this); }
+        disable() { state.asyncStorages.delete(this); return super.disable(); }
+    }
+    const asyncHooks = {
+        ...asyncHooksModule,
+        AsyncLocalStorage: OwnedAsyncLocalStorage,
+        createHook: (...args) => {
+            assertStarting();
+            const hook = asyncHooksModule.createHook(...args);
+            state.asyncHooks.add(hook);
+            return hook;
+        },
+    };
     const sdk = await scope.loadPiCodingAgent();
     const makeRequire = (base) => {
         const realRequire = createRequire(base);
@@ -111,6 +143,8 @@ export default async function activate(pi) {
             if (specifier === "node:console" || specifier === "console") return scopedConsole;
             if (specifier === "node:child_process" || specifier === "child_process") return childProcesses;
             if (specifier === "node:worker_threads" || specifier === "worker_threads") return { ...workerModule, Worker: OwnedWorker };
+            if (specifier === "node:perf_hooks" || specifier === "perf_hooks") return perfHooks;
+            if (specifier === "node:async_hooks" || specifier === "async_hooks") return asyncHooks;
             if (specifier === "node:timers" || specifier === "timers") return { ...realRequire(specifier), ...timers };
             if (specifier === "node:module" || specifier === "module") return { ...realRequire(specifier), createRequire: makeRequire };
             return realRequire(specifier);
@@ -134,35 +168,69 @@ export default async function activate(pi) {
         return { ...file, instances: entries };
     };
     let beforeClose, finalize;
-    execute(module.exports, requireModule, module, originalEntry, dirname(originalEntry), globalProxy, globalProxy, processProxy, scopedConsole,
-        timers.setTimeout, timers.setInterval, timers.clearTimeout, timers.clearInterval, timers.setImmediate, timers.clearImmediate, pathToFileURL(originalEntry).href,
-        { releaseRegistration, runOwned, runCleanup: (action) => cleanup.run(true, action), loadSdk: () => scope.loadPiCodingAgent(), recordFailure: (error) => state.failures.push(error), setBeforeClose: (action) => { beforeClose = action; }, setFinalizer: (action) => { finalize = action; } });
     const shutdown = [];
-    const scopedApi = scopedExtensionApi(pi, scope);
-    const api = new Proxy(scopedApi, { get(target, property) {
-        if (property === "on") return (event, handler) => {
-            if (event === "session_shutdown") shutdown.push(handler);
-            else target.on(event, event === "session_start" ? (input, ctx) => { state.cwd = ctx.cwd; return handler(input, ctx); } : handler);
-        };
-        return Reflect.get(target, property);
-    } });
-    pi.on("session_shutdown", async (event, ctx) => {
-        await runHarnessScope(scope, () => beforeClose?.());
-        await drainTasks();
-        state.closing = true;
-        await cleanup.run(true, () => runHarnessScope(scope, async () => {
-            for (const handler of shutdown) await handler(event, ctx);
-            await drainTasks();
-            await Promise.all([...state.workers].map((worker) => worker.terminate()));
-            while (state.children.size) await Promise.all([...state.children].map((item) => item.closed));
-            await drainTasks();
-            await finalize?.();
-            if (state.failures.length) throw new AggregateError(state.failures, `pi-lens 所属资源保存失败：${state.failures.map((error) => error instanceof Error ? error.message : String(error)).join("；")}`);
-        }));
+    let disposed = false;
+    const disposeSandboxResources = () => {
+        if (disposed) return;
+        disposed = true;
         state.closed = true;
-        for (const timer of state.timers) clear(timer);
-        for (const item of state.listeners) process.removeListener(item.event, item.wrapper);
-        state.listeners.clear(); instances.delete(state);
-    });
-    await runHarnessScope(scope, () => module.exports.default(api));
+        for (const timer of [...state.timers]) clear(timer);
+        state.timers.clear();
+        for (const item of [...state.listeners]) process.removeListener(item.event, item.wrapper);
+        state.listeners.clear();
+        for (const observer of [...state.perfObservers]) { try { observer.disconnect(); } catch {} }
+        state.perfObservers.clear();
+        for (const histogram of [...state.eventLoopMonitors]) { try { histogram.disable(); } catch {} }
+        state.eventLoopMonitors.clear();
+        for (const hook of [...state.asyncHooks]) { try { hook.disable(); } catch {} }
+        state.asyncHooks.clear();
+        for (const storage of [...state.asyncStorages]) { try { storage.disable(); } catch {} }
+        state.asyncStorages.clear();
+        state.processValues.clear();
+        globals.clear();
+        shutdown.length = 0;
+        state.failures.length = 0;
+        beforeClose = undefined;
+        finalize = undefined;
+        module.exports = {};
+        instances.delete(state);
+    };
+    try {
+        execute(module.exports, requireModule, module, originalEntry, dirname(originalEntry), globalProxy, globalProxy, processProxy, scopedConsole,
+            timers.setTimeout, timers.setInterval, timers.clearTimeout, timers.clearInterval, timers.setImmediate, timers.clearImmediate, pathToFileURL(originalEntry).href,
+            { releaseRegistration, runOwned, runCleanup: (action) => cleanup.run(true, action), loadSdk: () => scope.loadPiCodingAgent(), recordFailure: (error) => state.failures.push(error), setBeforeClose: (action) => { beforeClose = action; }, setFinalizer: (action) => { finalize = action; } });
+        const scopedApi = scopedExtensionApi(pi, scope);
+        const api = new Proxy(scopedApi, { get(target, property) {
+            if (property === "on") return (event, handler) => {
+                if (event === "session_shutdown") shutdown.push(handler);
+                else target.on(event, event === "session_start" ? (input, ctx) => { state.cwd = ctx.cwd; return handler(input, ctx); } : handler);
+            };
+            return Reflect.get(target, property);
+        } });
+        pi.on("session_shutdown", async (event, ctx) => {
+            try {
+                await runHarnessScope(scope, () => beforeClose?.());
+                await drainTasks();
+                state.closing = true;
+                await cleanup.run(true, () => runHarnessScope(scope, async () => {
+                    for (const handler of shutdown) await handler(event, ctx);
+                    await drainTasks();
+                    await Promise.all([...state.workers].map((worker) => worker.terminate()));
+                    while (state.children.size) await Promise.all([...state.children].map((item) => item.closed));
+                    await drainTasks();
+                    await finalize?.();
+                    if (state.failures.length) {
+                        const failures = state.failures.splice(0);
+                        throw new AggregateError(failures, `pi-lens 所属资源保存失败：${failures.map((error) => error instanceof Error ? error.message : String(error)).join("；")}`);
+                    }
+                }));
+            } finally {
+                disposeSandboxResources();
+            }
+        });
+        await runHarnessScope(scope, () => module.exports.default(api));
+    } catch (error) {
+        disposeSandboxResources();
+        throw error;
+    }
 }

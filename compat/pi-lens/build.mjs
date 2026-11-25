@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 export async function buildLensRuntime(output) {
     const source = fileURLToPath(new URL("./runtime-source.js", import.meta.url));
     const result = await transform(await readFile(source, "utf8"), { format: "cjs", target: "node24", sourcefile: source,
-        define: { "import.meta.url": "__harnessModuleUrl" }, sourcemap: "inline" });
+        define: { "import.meta.url": "__harnessModuleUrl" }, sourcemap: false });
     await mkdir(dirname(output), { recursive: true });
     await writeFile(output, result.code);
 }

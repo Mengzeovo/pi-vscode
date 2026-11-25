@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 import { createMessageConnection, IPCMessageReader, IPCMessageWriter } from "vscode-jsonrpc/node";
 import { OperationStore, type OwnershipRecord } from "../backend/operationStore";
 import { WriteLock } from "../sessions/writeLock";
@@ -20,6 +21,7 @@ let backend: ProcessHandle | undefined;
 let generation: GenerationAuthorization | undefined;
 let cleaning = false;
 let cleaned = false;
+let backendExitLogged = false;
 let cleanupPromise: Promise<void> | undefined;
 let chain = Promise.resolve();
 
@@ -47,6 +49,14 @@ async function cleanup(deadline: number): Promise<void> {
 	cleaning = true;
 	publish();
 	cleanupPromise = sequence(async () => {
+		if (backend?.exited && !backendExitLogged) {
+			let code: number | undefined;
+			try { code = backend.exitCode; } catch {}
+			if (code !== 0) {
+				backendExitLogged = true;
+				try { writeSync(2, `[guardian] 后台进程在清理前已退出（PID ${backend.identity.pid}，退出码 ${formatExitCode(code)}）\n`); } catch {}
+			}
+		}
 		if (job) await job.terminate(deadline);
 		for (const entry of owned.values()) {
 			if (Date.now() >= deadline) throw new Error("保存进程清理证明超过关闭期限");
@@ -58,6 +68,12 @@ async function cleanup(deadline: number): Promise<void> {
 		publish();
 	});
 	return cleanupPromise;
+}
+
+function formatExitCode(code: number | undefined): string {
+	if (code === undefined) return "未知";
+	const unsigned = code >>> 0;
+	return unsigned > 255 ? `${code} (0x${unsigned.toString(16).toUpperCase().padStart(8, "0")})` : String(code);
 }
 
 function fatal(error: unknown): void {
@@ -164,8 +180,13 @@ connection.listen();
 const monitor = setInterval(() => {
 	if (host.exited) { clearInterval(monitor); void finishAfterHostExit(); return; }
 	if (backend?.exited && !cleaning) {
+		let code: number | undefined;
+		try { code = backend.exitCode; } catch {}
+		const reason = `后台进程已经退出（PID ${backend.identity.pid}，退出码 ${formatExitCode(code)}）`;
+		backendExitLogged = true;
+		try { writeSync(2, `[guardian] ${reason}\n`); } catch {}
 		void cleanup(Date.now() + 4_000).then(() => {
-			if (process.connected) return connection.sendNotification("guardian/invalidated", { generationId: generation?.generationId, reason: "后台进程已经退出", cleaned: true });
+			if (process.connected) return connection.sendNotification("guardian/invalidated", { generationId: generation?.generationId, reason, cleaned: true });
 		}, fatal);
 	}
 }, 50);

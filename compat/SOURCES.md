@@ -16,9 +16,9 @@
 
 `pi-mcp/index.js` 保留 Pi 的 MCP 协议、登录及工具流程，增加每会话、每运行代次的配置、连接尝试、工具注册和关闭完成通知。`dependencies.js` 从实际 Pi 安装路径加载同版本依赖。
 
-`pi-lens/runtime-source.js` 保留上游完整模块。`build.mjs` 使用 esbuild 生成 CommonJS 产物；`index.js` 使用 Node.js `vm.compileFunction` 的参数绑定，为每次激活提供独立模块变量、全局属性与 `process` 符号状态。实际 SDK、文件、网络、子进程及 Worker 继续使用真实接口。每个会话记录自己创建的进程句柄、Worker、定时器和进程监听器。完整 `safeSpawnAsync` 操作涵盖进程、管道与采样清理，目录登记写入从创建时计入所属任务；关闭等待这些实际 Promise、graph 构建和 checkpoint Worker，执行上游 graph 与 snapshot 保存，等待真实进程退出、后台写入及日志保存，再清理所属监听器和计时器。LSP 退出后的目录登记使用所属清理上下文。写入错误通过 SDK 生命周期错误报告原始系统原因与路径。其他上游修改包含 SDK 文件修改队列的来源、单会话关闭使用完整 LSP 进程树清理、共享 PID 登记只移除所属目录与子进程。`skills/` 保留原包技能；语法资源、配置、原生依赖和工作进程文件来自固定版本的生产依赖 `pi-lens@4.4.8`。
+`pi-lens/runtime-source.js` 保留上游完整模块。`build.mjs` 使用 esbuild 生成不带内联 sourcemap 的 CommonJS 产物；`index.js` 使用 Node.js `vm.compileFunction` 的参数绑定，为每次激活提供独立模块变量、全局属性与 `process` 符号状态，并在目录查询轻模式（`catalogOnly`）下跳过重量级运行时激活。实际 SDK、文件、网络、子进程及 Worker 继续使用真实接口。每个会话记录自己创建的进程句柄、Worker、定时器、`node:perf_hooks` 观察器与事件循环采样器、`node:async_hooks` 钩子与存储和进程监听器。完整 `safeSpawnAsync` 操作涵盖进程、管道与采样清理，目录登记写入从创建时计入所属任务；关闭等待这些实际 Promise、graph 构建和 checkpoint Worker，执行上游 graph 与 snapshot 保存，等待真实进程退出、后台写入及日志保存，再显式释放 `wordIndex`、review-graph 与 tree-sitter WASM 缓存，并清理所属监听器、计时器、性能观察器与异步钩子。LSP 退出后的目录登记使用所属清理上下文。写入错误通过 SDK 生命周期错误报告原始系统原因与路径。其他上游修改包含 SDK 文件修改队列的来源、单会话关闭使用完整 LSP 进程树清理、共享 PID 登记只移除所属目录与子进程。`skills/` 保留原包技能；语法资源、配置、原生依赖和工作进程文件来自固定版本的生产依赖 `pi-lens@4.4.8`。
 
-`pi-token-usage/build.mjs` 的 `buildTokenUsage(output, packageDirectory?)` 从固定版本完整入口构建，保留上游命令、界面与统计范围；`scan.js` 使用 Pi 公开 `parseSessionEntries` 读取会话记录。缓存按照文件身份、纳秒时间和大小更新，新增、追加、重写、删除和替换文件都会重新计算。该包作为构建依赖，生产扩展包含已构建的 `dist/compat/pi-token-usage/dist/index.js`。
+`pi-token-usage/build.mjs` 的 `buildTokenUsage(output, packageDirectory?)` 通过兼容入口 `index.js` 打包固定版本上游代码，保留上游命令、界面与统计范围；在目录查询轻模式（`catalogOnly`）下跳过激活，并对 `session_start`、`turn_end` 与 `/usage footer` 的页脚刷新限定只扫描当日修改的会话文件，而 `/usage` 各类统计命令保持全量历史扫描。`scan.js` 使用 Pi 公开 `parseSessionEntries` 读取会话记录，缓存按照文件身份、纳秒时间、大小及扫描时间窗更新，新增、追加、重写、删除和替换文件都会重新计算。该包作为构建依赖，生产扩展包含已构建的 `dist/compat/pi-token-usage/dist/index.js`。
 
 构建执行 `npm ci` 和 `npm run build`。`scripts/build.mjs` 将本目录原样复制到 `dist/compat`，调用 `buildLensRuntime` 生成 `dist/compat/pi-lens/dist/runtime.cjs`，调用 `buildTokenUsage` 生成统计扩展入口，保留 runner、资源及相对导入路径；生产依赖复制到 `dist/node_modules`。动态 Pi SDK 与 `typebox` 解析到当前选定的 Pi 安装目录。VSIX 包含 `dist/compat`、生产依赖及许可证。
 

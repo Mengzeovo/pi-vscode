@@ -1,9 +1,31 @@
+import { writeSync } from "node:fs";
 import { createMessageConnection, IPCMessageReader, IPCMessageWriter } from "vscode-jsonrpc/node";
 import { BackendCatalog, BackendCommand, BackendInitialize, BackendMarkSubmitted, BackendOpen, BackendPendingRecovery, BackendPrepareSession, BackendRecordFileIntent, BackendRelease, BackendReload, BackendRespondUi, BackendRestore, BackendResumeRecovery, BackendSetProtection, BackendShutdown, BackendSubscribe, BackendUnsubscribe, BackendValidateIdentity } from "./protocol";
 import type { BackendRegistry } from "./registry";
 
 if (!process.send) throw new Error("Pi 后台必须通过具有 IPC 通道的 fork 启动");
-process.once("disconnect", () => process.exit(1));
+let shuttingDown = false;
+function logStderrSync(line: string): void {
+	try { writeSync(2, `[backend pid=${process.pid}] ${line}\n`); } catch {}
+}
+process.on("uncaughtExceptionMonitor", (error, origin) => {
+	const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+	logStderrSync(`${origin}: ${detail}`);
+});
+process.on("exit", (code) => {
+	if (code !== 0 || !shuttingDown) {
+		const mem = process.memoryUsage();
+		logStderrSync(`exit code=${code} shuttingDown=${shuttingDown} rssMiB=${(mem.rss / 1_048_576).toFixed(1)} heapMiB=${(mem.heapUsed / 1_048_576).toFixed(1)}`);
+	}
+});
+process.once("disconnect", () => {
+	if (shuttingDown) {
+		process.exit(0);
+	} else {
+		logStderrSync("IPC channel disconnected unexpectedly");
+		process.exit(1);
+	}
+});
 const handshake = setTimeout(() => { console.error("Pi 后台没有在期限内收到进程管理确认"); process.exit(1); }, 15_000);
 const connection = createMessageConnection(new IPCMessageReader(process), new IPCMessageWriter(process));
 let registry: BackendRegistry | undefined;
@@ -35,5 +57,5 @@ connection.onRequest(BackendResumeRecovery, async (params) => (await current().r
 connection.onRequest(BackendPendingRecovery, (params) => current().pendingRecovery(params) ?? null);
 connection.onRequest(BackendMarkSubmitted, (params) => current().markSubmitted(params));
 connection.onNotification(BackendRespondUi, (params) => current().respondUi(params));
-connection.onRequest(BackendShutdown, async (params) => { current().assertGeneration(params); await current().shutdown(params.deadline); setImmediate(() => process.disconnect()); });
+connection.onRequest(BackendShutdown, async (params) => { current().assertGeneration(params); shuttingDown = true; await current().shutdown(params.deadline); setImmediate(() => process.disconnect()); });
 connection.listen();

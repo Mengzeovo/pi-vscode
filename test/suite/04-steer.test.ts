@@ -116,7 +116,7 @@ describe("引导消息和停止", () => {
 		const observations: unknown[] = [];
 		const capture = (event: string): void => {
 			const snapshot = backend.snapshot?.sessions.find((item) => item.sessionId === sessionId);
-			observations.push({ event, elapsedMs: Date.now() - started, at: new Date().toISOString(), sequence: snapshot?.sequence, state: snapshot?.state, busy: snapshot?.busy, sessionBusy: api.hub.existingSession(sessionId)?.isBusy, childTasks: snapshot?.childTasks, pendingInteractions: snapshot?.pendingInteractions, pendingCommits: snapshot?.pendingCommits, messageCount: snapshot?.messages.length });
+			observations.push({ event, elapsedMs: Date.now() - started, at: new Date().toISOString(), sequence: snapshot?.sequence, state: snapshot?.state, busy: snapshot?.busy, sessionBusy: api.hub.existingSession(sessionId)?.isBusy, childTasks: snapshot?.childTasks, pendingInteractions: snapshot?.pendingInteractions, pendingCommits: snapshot?.pendingCommits, messageCount: snapshot?.rpcState?.messageCount });
 			writeFileSync(join(env("PI_HARNESS_TEST_WORK"), "stop-observations.json"), JSON.stringify(observations, null, 2));
 		};
 		const unsubscribe = backend.onChanged(() => capture("backend-changed"));

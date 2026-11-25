@@ -90,8 +90,14 @@ export class ProcessHandle {
 		if (result === 0xffffffff) throw new Error(`WaitForSingleObject 失败，Win32=${GetLastError()}`);
 		return result === 0;
 	}
-	terminate(): void {
-		if (this.exited || TerminateProcess(this.handle, 1)) return;
+	get exitCode(): number | undefined {
+		if (this.closed) throw new Error("进程句柄已经关闭");
+		const code = [259];
+		checked(GetExitCodeProcess(this.handle, code), "GetExitCodeProcess");
+		return code[0] === 259 ? undefined : code[0];
+	}
+	terminate(code = 1): void {
+		if (this.exited || TerminateProcess(this.handle, code)) return;
 		const error = GetLastError();
 		const exitCode = [259];
 		checked(GetExitCodeProcess(this.handle, exitCode), "GetExitCodeProcess");

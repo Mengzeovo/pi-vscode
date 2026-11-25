@@ -57,7 +57,6 @@ export interface BackendSessionSnapshot extends BackendIdentity {
 	readonly mcp?: McpState;
 	readonly runId?: string;
 	readonly requestId?: string;
-	readonly messages: readonly unknown[];
 	readonly rpcState?: RpcSessionState;
 }
 

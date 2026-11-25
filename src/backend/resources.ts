@@ -22,7 +22,7 @@ export interface McpState {
 	configurationErrors: string[]; closeComplete: boolean; servers: McpServerState[];
 }
 export interface HarnessScope {
-	sessionId: string; cwd: string; blocked: boolean; state?: unknown;
+	sessionId: string; cwd: string; blocked: boolean; catalogOnly?: boolean; state?: unknown;
 	children: Set<{ abort(): Promise<void>; dispose(): Promise<void> }>;
 	starting: Set<Promise<unknown>>;
 	states: Set<unknown>;
@@ -127,6 +127,7 @@ export class SessionResources {
 		this.view = factory.resourceSettings(this.original);
 		const childIdentity = (): CommitIdentity => ({ ...(factory.compat.currentHarnessScope()?.commitIdentity as CommitIdentity | undefined) ?? identity() });
 		this.scope = factory.compat.createHarnessScope({ sessionId: options.sessionId, cwd: options.cwd, agentDir: factory.options.agentDir,
+			catalogOnly: options.ownershipId === "catalog",
 			identity,
 			loadPiCodingAgent: async () => factory.sdk,
 			runResourceLoad: <T>(action: () => Promise<T>) => factory.imports.run(action),

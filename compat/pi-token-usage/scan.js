@@ -1,13 +1,19 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, fstatSync, openSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
 
 const roots = new Map();
+const scanWindow = new AsyncLocalStorage();
 let cached;
 
 export function refreshCachedRecords() {
     cached = undefined;
+}
+
+export function runWithScanWindow(sinceMs, action) {
+    return scanWindow.run(sinceMs, action);
 }
 
 function absent(error) {
@@ -55,17 +61,20 @@ function readStableFile(file, projectDirectory, filename) {
     throw new Error(`用量统计读取期间文件持续变化：${file}`);
 }
 
-export function scanAllSessions() {
+export function scanAllSessions(options) {
     const agent = (process.env.PI_CODING_AGENT_DIR ?? "").trim() || join(homedir(), ".pi", "agent");
     const root = resolve(agent, "sessions");
-    if (cached?.root === root) return cached.records;
+    const rawSinceMs = typeof options?.sinceMs === "number" ? options.sinceMs : scanWindow.getStore();
+    const windowed = typeof rawSinceMs === "number" && Number.isFinite(rawSinceMs);
+    const sinceMs = windowed ? rawSinceMs : undefined;
+    if (cached?.root === root && cached.sinceMs === sinceMs) return cached.records;
     let files = roots.get(root);
     if (!files) { files = new Map(); roots.set(root, files); }
     let projects;
     try { projects = readdirSync(root); }
     catch (error) {
         if (!absent(error)) throw error;
-        files.clear(); cached = { root, records: [] }; return cached.records;
+        files.clear(); cached = { root, sinceMs, records: [] }; return cached.records;
     }
     const visited = new Set(), seen = new Set(), records = [];
     for (const project of projects) {
@@ -80,6 +89,10 @@ export function scanAllSessions() {
             try {
                 const stat = statSync(file, { bigint: true });
                 if (!stat.isFile()) continue;
+                if (windowed) {
+                    const mtimeMs = Number(stat.mtimeNs / 1_000_000n);
+                    if (mtimeMs < sinceMs - 60_000) continue;
+                }
                 let value = files.get(file);
                 if (!value || value.signature !== signature(stat)) {
                     value = readStableFile(file, project, name);
@@ -87,15 +100,21 @@ export function scanAllSessions() {
                 }
                 visited.add(file);
                 for (const record of value.records) {
+                    if (windowed && record.timestamp < sinceMs) continue;
                     const key = `${record.isoTimestamp}:${record.totalTokens}`;
                     if (seen.has(key)) continue;
                     seen.add(key); records.push(record);
                 }
-            } catch (error) { if (!absent(error)) throw error; }
+            } catch (error) {
+                if (absent(error)) { files.delete(file); continue; }
+                throw error;
+            }
         }
     }
-    for (const file of files.keys()) if (!visited.has(file)) files.delete(file);
+    if (!windowed) {
+        for (const file of files.keys()) if (!visited.has(file)) files.delete(file);
+    }
     records.sort((left, right) => left.timestamp - right.timestamp);
-    cached = { root, records };
+    cached = { root, sinceMs, records };
     return records;
 }

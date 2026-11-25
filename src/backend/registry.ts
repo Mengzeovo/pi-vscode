@@ -20,6 +20,7 @@ const LOAD_TIMEOUT_MS = 60_000;
 const CLOSE_TIMEOUT_MS = 10_000;
 
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function cwdKey(cwd: string): string { const normalized = resolve(cwd); return process.platform === "win32" ? normalized.toLowerCase() : normalized; }
 function withDeadline<T>(operation: Promise<T> | (() => Promise<T>), timeout: number, label: string, expired?: () => void): Promise<T> {
 	let timer: NodeJS.Timeout | undefined;
 	const expiresAt = performance.now() + timeout;
@@ -76,7 +77,6 @@ interface Resident {
 	loading?: Promise<void>;
 	closing?: Promise<void>;
 	accepting: boolean;
-	partial?: unknown;
 	cleanupUnconfirmed?: string;
 	extensionFlags?: Map<string, boolean | string>;
 	tools?: { active: string[]; known: Set<string> };
@@ -247,7 +247,7 @@ export class BackendRegistry {
 					entry.runtime.session.setActiveToolsByName([...entry.tools.active.filter((name) => available.has(name)), ...entry.runtime.session.getActiveToolNames().filter((name) => !entry.tools!.known.has(name))]);
 				}
 				entry.state = "loaded"; entry.error = undefined; entry.accepting = true;
-				this.catalogs.delete(entry.options.cwd);
+				this.catalogs.delete(cwdKey(entry.options.cwd));
 				void this.transport.sendNotification(BackendCatalogChanged, { generationId: entry.options.generationId, cwd: entry.options.cwd, sessionId: entry.options.sessionId });
 				this.publish(entry);
 			} catch (error) {
@@ -307,12 +307,10 @@ export class BackendRegistry {
 				const input = starting ?? (consumed >= 0 ? entry.delivered.splice(consumed, 1)[0] : undefined);
 				if (input) { entry.inputs = entry.inputs.filter((item) => item !== input); entry.identity = input.identity; }
 			}
-			if (event.type === "message_update") entry.partial = event.message;
-			if (event.type === "message_end" || event.type === "agent_settled") entry.partial = undefined;
 			void this.transport.sendNotification(BackendEvent, { ...this.envelope(entry), event: this.toJsonEvent(event) });
 			if (event.type === "agent_start") entry.state = entry.reloadPending ? "reload-pending" : "running";
 			if (event.type === "agent_settled") entry.state = entry.reloadPending ? "reload-pending" : "loaded";
-			this.publish(entry);
+			if (event.type !== "message_update") this.publish(entry);
 		});
 		await this.factory.compat.runHarnessScope(entry.resources!.scope, () => session.bindExtensions({
 			mode: "rpc", uiContext: entry.ui!.context, onError: (error) => {
@@ -580,15 +578,36 @@ export class BackendRegistry {
 		entry.recovery = false;
 	}
 
+	private findReusableCatalogSession(key: string, projectTrusted: boolean): Resident | undefined {
+		let best: Resident | undefined;
+		for (const entry of this.sessions.values()) {
+			if (cwdKey(entry.options.cwd) !== key) continue;
+			if (!entry.runtime || !entry.resources || !entry.accepting || entry.closing || entry.reloadPending) continue;
+			if (entry.resources.original.isProjectTrusted() !== projectTrusted) continue;
+			if (!best || entry.lastUsed > best.lastUsed) best = entry;
+		}
+		return best;
+	}
+
 	async catalog(params: { generationId: string; cwd: string; projectTrusted: boolean; refresh?: boolean; sessionId?: string }): Promise<BackendCatalogSnapshot> {
 		this.assertGeneration(params);
-		if (params.sessionId) { const entry = this.sessions.get(params.sessionId); if (entry?.runtime) return this.catalogFrom(entry.runtime.session, entry.resources!); }
-		const protectedError = this.catalogProtected.get(params.cwd);
+		if (params.sessionId) { const entry = this.sessions.get(params.sessionId); if (entry?.runtime) return this.catalogFrom(entry.runtime.session, entry.resources!, "session", params.cwd); }
+		const key = cwdKey(params.cwd);
+		const protectedError = this.catalogProtected.get(key);
 		if (protectedError) throw new Error(protectedError);
-		if (params.refresh && !this.catalogLoading.has(params.cwd)) this.catalogs.delete(params.cwd);
-		let pending = this.catalogs.get(params.cwd);
+		if (params.refresh && !this.catalogLoading.has(key)) this.catalogs.delete(key);
+		let pending = this.catalogs.get(key);
+		if (!pending && !params.refresh) {
+			const reusable = this.findReusableCatalogSession(key, params.projectTrusted);
+			if (reusable?.runtime && reusable.resources) {
+				pending = this.catalogFrom(reusable.runtime.session, reusable.resources, "workspace", params.cwd);
+				this.catalogs.set(key, pending);
+				void pending.catch(() => { if (this.catalogs.get(key) === pending) this.catalogs.delete(key); });
+				return pending;
+			}
+		}
 		if (!pending) {
-			this.catalogLoading.add(params.cwd);
+			this.catalogLoading.add(key);
 			let expired = false;
 			const timeout = setTimeout(() => { expired = true; }, LOAD_TIMEOUT_MS);
 			pending = this.factory.sequence.run(async () => {
@@ -609,7 +628,7 @@ export class BackendRegistry {
 					resources.checkDiagnostics(); if (errors.length) throw new Error(errors.join("\n"));
 					while (!resources.checkMcp()) { if (expired) throw new Error("目录加载已经超过期限"); await delay(25); }
 					if (expired) throw new Error("目录加载已经超过期限");
-					return await this.catalogFrom(runtime.session, resources);
+					return await this.catalogFrom(runtime.session, resources, "session", params.cwd);
 				} finally {
 					try {
 						const beforeShutdown = errors.length;
@@ -621,12 +640,12 @@ export class BackendRegistry {
 						}
 						if (resources.initializationUnconfirmed) throw new Error("目录扩展工厂未完整返回，所属资源关闭无法确认");
 						if (errors.length > beforeShutdown) throw new Error(errors.slice(beforeShutdown).join("\n"));
-					} catch (error) { this.catalogProtected.set(params.cwd, message(error)); throw error; }
+					} catch (error) { this.catalogProtected.set(key, message(error)); throw error; }
 					finally { unsubscribe?.(); this.factory.compat.removeHarnessScope(resources.scope); }
 				}
-			}).finally(() => { clearTimeout(timeout); this.catalogLoading.delete(params.cwd); });
-			this.catalogs.set(params.cwd, pending);
-			void pending.catch(() => { if (this.catalogs.get(params.cwd) === pending) this.catalogs.delete(params.cwd); });
+			}).finally(() => { clearTimeout(timeout); this.catalogLoading.delete(key); });
+			this.catalogs.set(key, pending);
+			void pending.catch(() => { if (this.catalogs.get(key) === pending) this.catalogs.delete(key); });
 		}
 		return withDeadline(pending, LOAD_TIMEOUT_MS, "资源目录查询");
 	}
@@ -640,14 +659,29 @@ export class BackendRegistry {
 		return scopedModels;
 	}
 
-	private async catalogFrom(session: AgentSession, resources: SessionResources): Promise<BackendCatalogSnapshot> {
+	private async catalogFrom(session: AgentSession, resources: SessionResources, scopeMode: "session" | "workspace" = "session", cwd: string = resources.options.cwd): Promise<BackendCatalogSnapshot> {
 		const scopedModels = await this.resolveSavedModelScope({ settingsManager: resources.original, modelRuntime: session.modelRuntime });
 		const models = scopedModels?.map((item) => item.model) ?? session.modelRuntime.getAvailableSnapshot();
 		const current = models.find((model) => model.provider === session.model?.provider && model.id === session.model.id);
-		const selected = current ?? scopedModels?.[0]?.model;
-		const thinking = current || !scopedModels ? session.thinkingLevel : scopedModels[0]?.thinkingLevel
-			?? (selected ? resources.original.getModelThinkingLevel(selected.provider, selected.id) : undefined)
-			?? resources.original.getDefaultThinkingLevel() ?? session.thinkingLevel;
+		let selected: NonNullable<RpcSessionState["model"]> | undefined;
+		let thinking: RpcSessionState["thinkingLevel"];
+		if (scopeMode === "workspace") {
+			const defaultProvider = resources.original.getDefaultProvider();
+			const defaultModelId = resources.original.getDefaultModel();
+			const configuredDefault = defaultProvider && defaultModelId
+				? models.find((model) => model.provider === defaultProvider && model.id === defaultModelId)
+				: undefined;
+			selected = scopedModels?.[0]?.model ?? configuredDefault ?? current ?? models[0];
+			thinking = (scopedModels?.[0]?.model === selected ? scopedModels[0]?.thinkingLevel : undefined)
+				?? (selected ? resources.original.getModelThinkingLevel(selected.provider, selected.id) : undefined)
+				?? resources.original.getDefaultThinkingLevel()
+				?? session.thinkingLevel;
+		} else {
+			selected = current ?? scopedModels?.[0]?.model;
+			thinking = current || !scopedModels ? session.thinkingLevel : scopedModels[0]?.thinkingLevel
+				?? (selected ? resources.original.getModelThinkingLevel(selected.provider, selected.id) : undefined)
+				?? resources.original.getDefaultThinkingLevel() ?? session.thinkingLevel;
+		}
 		const levels: Record<string, RpcSessionState["thinkingLevel"][]> = {};
 		for (const model of models) {
 			// 目录查询对象没有持久历史；活动会话仅使用模型公开能力。
@@ -656,7 +690,7 @@ export class BackendRegistry {
 			} else { await session.setModel(model, { persist: false }); levels[`${model.provider}/${model.id}`] = session.getAvailableThinkingLevels(); }
 		}
 		if (!session.sessionManager.isPersisted() && selected) { await session.setModel(selected, { persist: false }); session.setThinkingLevel(thinking, { persist: false }); }
-		return { cwd: resources.options.cwd, models, levels, defaultModel: selected ? `${selected.provider}/${selected.id}` : undefined, defaultThinking: thinking, skills: resources.skills() };
+		return { cwd, models, levels, defaultModel: selected ? `${selected.provider}/${selected.id}` : undefined, defaultThinking: thinking, skills: resources.skills() };
 	}
 
 	private trim(): Promise<void> {
@@ -682,7 +716,7 @@ export class BackendRegistry {
 	}
 	private envelope(entry: Resident) { return { sessionId: entry.options.sessionId, generationId: entry.options.generationId, runtimeGeneration: entry.generation, sequence: ++entry.sequence, requestId: entry.identity?.rootRequestId, runId: entry.identity?.runId }; }
 	private rpcState(session: AgentSession): RpcSessionState { return { model: session.model, thinkingLevel: session.thinkingLevel, isStreaming: session.isStreaming, isCompacting: session.isCompacting, steeringMode: session.steeringMode, followUpMode: session.followUpMode, sessionFile: session.sessionFile, sessionId: session.sessionId, sessionName: session.sessionName, autoCompactionEnabled: session.autoCompactionEnabled, messageCount: session.messages.length, pendingMessageCount: session.pendingMessageCount }; }
-	private snapshot(entry: Resident): BackendSessionSnapshot { const session = entry.runtime?.session; return { generationId: entry.options.generationId, sessionId: entry.options.sessionId, runtimeGeneration: entry.generation, sequence: entry.sequence, name: session?.sessionName ?? entry.options.name ?? entry.options.sessionId.slice(0, 8), cwd: entry.options.cwd, sessionFile: entry.options.sessionFile, state: (entry.ui?.count ?? 0) > 0 && entry.state === "running" ? "waiting" : entry.state, busy: this.busy(entry), subscriptions: entry.subscriptions.size, childTasks: this.childCount(entry), pendingInteractions: entry.ui?.count ?? 0, pendingCommits: entry.commits, reloadPending: entry.reloadPending, resourceOperation: entry.closing ? "closing" : entry.loading ? "loading" : undefined, error: entry.error ?? entry.mcpError, mcp: entry.resources?.mcpState, runId: entry.identity?.runId, requestId: entry.identity?.rootRequestId, messages: [...session?.messages ?? [], ...entry.partial ? [entry.partial] : []], rpcState: session ? this.rpcState(session) : undefined }; }
+	private snapshot(entry: Resident): BackendSessionSnapshot { const session = entry.runtime?.session; return { generationId: entry.options.generationId, sessionId: entry.options.sessionId, runtimeGeneration: entry.generation, sequence: entry.sequence, name: session?.sessionName ?? entry.options.name ?? entry.options.sessionId.slice(0, 8), cwd: entry.options.cwd, sessionFile: entry.options.sessionFile, state: (entry.ui?.count ?? 0) > 0 && entry.state === "running" ? "waiting" : entry.state, busy: this.busy(entry), subscriptions: entry.subscriptions.size, childTasks: this.childCount(entry), pendingInteractions: entry.ui?.count ?? 0, pendingCommits: entry.commits, reloadPending: entry.reloadPending, resourceOperation: entry.closing ? "closing" : entry.loading ? "loading" : undefined, error: entry.error ?? entry.mcpError, mcp: entry.resources?.mcpState, runId: entry.identity?.runId, requestId: entry.identity?.rootRequestId, rpcState: session ? this.rpcState(session) : undefined }; }
 	private publish(entry: Resident): void { if (this.sessions.get(entry.options.sessionId) === entry) void this.transport.sendNotification(BackendSessionChanged, this.snapshot(entry)); }
 	private publishProcess(): void {
 		const cpu = process.cpuUsage(); const now = process.hrtime.bigint();

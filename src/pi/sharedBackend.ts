@@ -35,6 +35,12 @@ interface RunningBackend {
 	valid: boolean;
 }
 
+function formatExitCode(code: number | null): string {
+	if (code === null) return "null";
+	const unsigned = code >>> 0;
+	return unsigned > 255 ? `${code} (0x${unsigned.toString(16).toUpperCase().padStart(8, "0")})` : String(code);
+}
+
 function withDeadline<T>(operation: Promise<T>, deadline: number, label: string): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error(`${label}超过等待期限`)), Math.max(1, deadline - Date.now()));
@@ -98,9 +104,13 @@ export class SharedBackendClient {
 			stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
 			env: { ...process.env, PI_HARNESS_STARTUP_NONCE: token },
 		});
-		for (const source of [child.stdout, child.stderr]) {
-			source?.on("data", (data: Buffer) => this.options.log(`[Pi 后台] ${data.toString().trimEnd()}`));
-		}
+		let stderrTail = "";
+		child.stdout?.on("data", (data: Buffer) => this.options.log(`[Pi 后台] ${data.toString().trimEnd()}`));
+		child.stderr?.on("data", (data: Buffer) => {
+			const text = data.toString();
+			stderrTail = (stderrTail + text).slice(-4096);
+			this.options.log(`[Pi 后台] ${text.trimEnd()}`);
+		});
 		const connection = createMessageConnection(new IPCMessageReader(child), new IPCMessageWriter(child));
 		const running: RunningBackend = { child, connection, guardian, generationId, valid: true };
 		this.running = running;
@@ -109,10 +119,28 @@ export class SharedBackendClient {
 			this.guardianSnapshot = snapshot;
 			this.events.emit("changed");
 		});
-		guardian.onInvalidated((error) => this.invalidate(running, error));
-		child.once("exit", (code, signal) => this.invalidate(running, new Error(`Pi 后台退出：${code ?? signal}`), { code, signal, stderrTail: "" }));
-		child.once("disconnect", () => this.invalidate(running, new Error("Pi 后台连接已经关闭")));
-		child.once("error", (error) => this.invalidate(running, error));
+		guardian.onInvalidated((error) => {
+			if (!running.valid && !this.closing) this.options.log(`进程管理辅助程序报告：${error.message}`);
+			this.invalidate(running, error);
+		});
+		child.once("exit", (code, signal) => {
+			const summary = `Pi 后台进程退出：PID ${child.pid ?? "?"}，code=${formatExitCode(code)}，signal=${signal ?? "none"}`;
+			if (this.closing) {
+				if (code !== 0 || signal !== null) this.options.log(summary);
+				return;
+			}
+			if (!running.valid) {
+				this.options.log(summary);
+			}
+			this.invalidate(running, new Error(summary), { code, signal, stderrTail });
+		});
+		child.once("disconnect", () => {
+			if (!this.closing) this.invalidate(running, new Error("Pi 后台连接已经关闭"), { code: null, signal: null, stderrTail });
+		});
+		child.once("error", (error) => {
+			if (!running.valid) this.options.log(`Pi 后台进程错误：${error.message}`);
+			this.invalidate(running, error);
+		});
 		connection.onNotification(BackendEvent, (message) => { if (this.isCurrent(running, message.generationId)) this.channels.get(message.sessionId)?.acceptEvent(message); });
 		connection.onNotification(BackendUi, (message) => { if (this.isCurrent(running, message.generationId)) this.channels.get(message.sessionId)?.acceptUi(message); });
 		connection.onNotification(BackendSnapshot, (snapshot) => {
@@ -172,7 +200,14 @@ export class SharedBackendClient {
 		this.channels.clear();
 		this.processSnapshot = undefined;
 		this.events.emit("changed");
-		this.cleanup ??= running.guardian.cleanup(this.closeDeadline ?? Date.now() + 4_000).then(() => {
+		const waitBackendExit = running.child.exitCode !== null || running.child.signalCode !== null
+			? Promise.resolve()
+			: new Promise<void>((resolve) => {
+				const done = () => { clearTimeout(timer); resolve(); };
+				const timer = setTimeout(() => { running.child.off("exit", done); resolve(); }, 250);
+				running.child.once("exit", done);
+			});
+		this.cleanup ??= waitBackendExit.then(() => running.guardian.cleanup(this.closeDeadline ?? Date.now() + 4_000)).then(() => {
 			if (this.running === running) {
 				this.running = undefined;
 				this.ownerships.clear();
@@ -326,7 +361,20 @@ export class SharedBackendClient {
 		}
 		const gracefulDeadline = Math.max(Date.now(), deadline - 1_000);
 		try {
-			if (running.valid) await withDeadline(running.connection.sendRequest(BackendShutdown, { generationId: running.generationId, deadline: gracefulDeadline }), gracefulDeadline, "关闭 Pi 会话");
+			if (running.valid) {
+				await withDeadline(running.connection.sendRequest(BackendShutdown, { generationId: running.generationId, deadline: gracefulDeadline }), gracefulDeadline, "关闭 Pi 会话");
+				running.valid = false;
+				if (running.child.exitCode === null && running.child.signalCode === null) {
+					const exitWait = Math.min(500, Math.max(0, gracefulDeadline - Date.now()));
+					if (exitWait > 0) {
+						await new Promise<void>((resolve) => {
+							const done = () => { clearTimeout(timer); resolve(); };
+							const timer = setTimeout(() => { running.child.off("exit", done); resolve(); }, exitWait);
+							running.child.once("exit", done);
+						});
+					}
+				}
+			}
 		} catch (error) {
 			this.options.log(`Pi 正常关闭未完成：${error instanceof Error ? error.message : String(error)}`);
 		} finally {

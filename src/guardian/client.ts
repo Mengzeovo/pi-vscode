@@ -47,7 +47,11 @@ export class GuardianClient {
 		child.once("exit", (code, signal) => {
 			this.lastSnapshot = undefined;
 			for (const listener of this.snapshotListeners) listener(undefined);
-			if (!this.closing) this.invalidate(new Error(`进程管理辅助程序退出：${code ?? signal}`));
+			if (!this.closing) {
+				const summary = `进程管理辅助程序退出：PID ${child.pid ?? "?"}，code=${code ?? "null"}，signal=${signal ?? "none"}`;
+				if (this.invalidated) this.options.log(summary);
+				this.invalidate(new Error(summary));
+			}
 		});
 		child.once("disconnect", () => { if (!this.closing) this.invalidate(new Error("进程管理辅助程序连接已经关闭")); });
 	}
